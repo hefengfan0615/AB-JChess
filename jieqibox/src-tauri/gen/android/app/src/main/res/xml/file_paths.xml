@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <external-path name="my_images" path="." />
+  <cache-path name="my_cache_images" path="." />
+  <!-- External storage access for chess engines -->
+  <external-path name="external_files" path="." />
+  <external-files-path name="external_files_path" path="." />
+  <files-path name="files_path" path="." />
+  <!-- JieqiBox engine directory access -->
+  <external-path name="jieqibox_engines" path="jieqibox/engines/" />
+  <!-- Download directory access -->
+  <external-path name="downloads" path="Download/" />
+  <external-path name="downloads_engines" path="Download/engines/" />
+</paths>

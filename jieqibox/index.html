@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JieqiBox</title>
+    <style>
+      /* Multi-language font settings using system fonts */
+      :root {
+        --font-zh-cn:
+          'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+          sans-serif;
+        --font-zh-tw:
+          'Noto Sans TC', 'PingFang TC', 'Hiragino Sans TC',
+          'Microsoft JhengHei', sans-serif;
+        --font-ja:
+          'Noto Sans JP', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN',
+          'Yu Gothic', 'Meiryo', sans-serif;
+        --font-en:
+          'Noto Sans', 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        --font-vi:
+          'Noto Sans', 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        --font-ko:
+          'Noto Sans KR', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Dotum',
+          sans-serif;
+        --font-ru:
+          'Noto Sans', 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        --font-de:
+          'Noto Sans', 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        --font-fr:
+          'Noto Sans', 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        --font-es:
+          'Noto Sans', 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        --font-th:
+          'Sarabun', 'Noto Sans Thai', 'Thonburi', 'Tahoma', sans-serif;
+        --font-ms:
+          'Noto Sans', 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+      }
+
+      /* Set fonts based on language */
+      [lang='zh_cn'],
+      [lang='zh-CN'] {
+        font-family: var(--font-zh-cn);
+      }
+
+      [lang='zh_tw'],
+      [lang='zh-TW'],
+      [lang='zh-HK'] {
+        font-family: var(--font-zh-tw);
+      }
+
+      [lang='ja'],
+      [lang='ja-JP'] {
+        font-family: var(--font-ja);
+      }
+
+      [lang='en'],
+      [lang='en-US'],
+      [lang='en-GB'] {
+        font-family: var(--font-en);
+      }
+
+      [lang='vi'],
+      [lang='vi-VN'] {
+        font-family: var(--font-vi);
+      }
+
+      [lang='ko'],
+      [lang='ko-KR'] {
+        font-family: var(--font-ko);
+      }
+
+      [lang='ru'],
+      [lang='ru-RU'] {
+        font-family: var(--font-ru);
+      }
+
+      [lang='de'],
+      [lang='de-DE'] {
+        font-family: var(--font-de);
+      }
+
+      [lang='fr'],
+      [lang='fr-FR'] {
+        font-family: var(--font-fr);
+      }
+
+      [lang='es'],
+      [lang='es-ES'] {
+        font-family: var(--font-es);
+      }
+
+      [lang='th'],
+      [lang='th-TH'] {
+        font-family: var(--font-th);
+      }
+
+      [lang='ms'],
+      [lang='ms-MY'] {
+        font-family: var(--font-ms);
+      }
+
+      /* Default font */
+      body {
+        font-family: var(--font-en);
+      }
+
+      /* Globally disable double-click highlighting and text selection */
+      * {
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      /* Specifically for image elements */
+      img {
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      /* For SVG elements */
+      svg {
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      ::-webkit-scrollbar {
+        display: none;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,340 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test || echo "No tests configured yet"
+
+  publish-tauri:
+    name: Build & Release Desktop
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+            include_yolo: true
+          - platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin'
+            include_yolo: true
+          - platform: 'ubuntu-22.04'
+            args: ''
+            include_yolo: true
+          - platform: 'windows-latest'
+            args: ''
+            include_yolo: true
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+            include_yolo: false
+          - platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin'
+            include_yolo: false
+          - platform: 'ubuntu-22.04'
+            args: ''
+            include_yolo: false
+          - platform: 'windows-latest'
+            args: ''
+            include_yolo: false
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libxcb1-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-render0-dev \
+            libxcb-randr0-dev \
+            libxcb-xinerama0-dev
+
+      - name: Download model (best.onnx)
+        if: matrix.include_yolo
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/models
+          curl -L --fail -o public/models/best.onnx \
+            https://github.com/Velithia/JieqiModels/releases/download/yolo-models/best.onnx
+          if [ ! -s public/models/best.onnx ]; then
+            echo "::error::best.onnx download failed or file is empty"
+            exit 1
+          fi
+          echo "best.onnx downloaded to public/models"
+
+      - name: Remove onnxruntime dependencies for no-yolo build
+        if: ${{ !matrix.include_yolo }}
+        shell: bash
+        run: |
+          # Remove onnxruntime-web from package.json
+          jq 'del(.dependencies."onnxruntime-web")' package.json > package.json.tmp && mv package.json.tmp package.json
+          echo "Removed onnxruntime-web dependency from package.json"
+
+          # Remove the real implementation file to avoid TypeScript errors
+          rm -f src/composables/image-recognition/useImageRecognition.real.ts
+          echo "Removed useImageRecognition.real.ts file"
+
+          # Replace index.ts with stub version
+          mv src/composables/image-recognition/index.ts.stub src/composables/image-recognition/index.ts
+          echo "Replaced index.ts with stub version"
+
+          # Modify vite.config.ts to remove onnxruntime static copy
+          # First, remove the import line
+          sed -i.bak '/import.*vite-plugin-static-copy/d' vite.config.ts
+          # Second, remove the plugin usage block
+          sed -i.bak '/viteStaticCopy({/,/}),/d' vite.config.ts
+          echo "Modified vite.config.ts to remove onnxruntime static copy"
+
+      - name: install frontend dependencies
+        run: npm ci
+
+      - name: build frontend
+        run: npm run build
+
+      - name: Update productName for no-yolo build
+        if: ${{ !matrix.include_yolo }}
+        shell: bash
+        run: |
+          jq '.productName = "jieqibox-no-yolo"' src-tauri/tauri.conf.json > tauri.conf.json.tmp && mv tauri.conf.json.tmp src-tauri/tauri.conf.json
+          echo "Updated productName to jieqibox-no-yolo in tauri.conf.json"
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_BUNDLE_IDENTIFIER_SUFFIX: ${{ !matrix.include_yolo && '-no-yolo' || '' }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'JieqiBox ${{ github.ref_name }}'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+          tauriScript: 'npm run tauri'
+
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - include_yolo: true
+          - include_yolo: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          ndk: 26.1.10909125
+          build-tools: '34.0.0'
+
+      - name: Export NDK environment variables
+        run: |
+          NDK_PATH="${ANDROID_NDK_ROOT:-$ANDROID_NDK_LATEST_HOME}"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$NDK_PATH"          >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android, i686-linux-android
+
+      - name: Download model (best.onnx)
+        if: matrix.include_yolo
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/models
+          curl -L --fail -o public/models/best.onnx \
+            https://github.com/Velithia/JieqiModels/releases/download/yolo-models/best.onnx
+          if [ ! -s public/models/best.onnx ]; then
+            echo "::error::best.onnx download failed or file is empty"
+            exit 1
+          fi
+          echo "best.onnx downloaded to public/models"
+
+      - name: Remove onnxruntime dependencies for no-yolo build
+        if: ${{ !matrix.include_yolo }}
+        shell: bash
+        run: |
+          # Remove onnxruntime-web from package.json
+          jq 'del(.dependencies."onnxruntime-web")' package.json > package.json.tmp && mv package.json.tmp package.json
+          echo "Removed onnxruntime-web dependency from package.json"
+
+          # Remove the real implementation file to avoid TypeScript errors
+          rm -f src/composables/image-recognition/useImageRecognition.real.ts
+          echo "Removed useImageRecognition.real.ts file"
+
+          # Replace index.ts with stub version
+          mv src/composables/image-recognition/index.ts.stub src/composables/image-recognition/index.ts
+          echo "Replaced index.ts with stub version"
+
+          # Modify vite.config.ts to remove onnxruntime static copy
+          # First, remove the import line
+          sed -i.bak '/import.*vite-plugin-static-copy/d' vite.config.ts
+          # Second, remove the plugin usage block
+          sed -i.bak '/viteStaticCopy({/,/}),/d' vite.config.ts
+          echo "Modified vite.config.ts to remove onnxruntime static copy"
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Init Tauri Android project
+        run: npm install -g @tauri-apps/cli
+
+      - name: Build Tauri Android app (unsigned)
+        run: npx tauri android build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_BUNDLE_IDENTIFIER_SUFFIX: ${{ !matrix.include_yolo && '-no-yolo' || '' }}
+
+      - name: Manually sign the APK
+        id: sign_apk
+        run: |
+          KEYSTORE_PATH=$RUNNER_TEMP/keystore.jks
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > $KEYSTORE_PATH
+          echo "Keystore file created at $KEYSTORE_PATH"
+
+          UNSIGNED_APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*-unsigned.apk" | head -n 1)
+          if [ -z "$UNSIGNED_APK_PATH" ]; then
+            echo "::error::Unsigned APK not found!"
+            find src-tauri/gen/android/app/build/outputs/apk -type f -name "*.apk"
+            exit 1
+          fi
+          echo "Found unsigned APK at: $UNSIGNED_APK_PATH"
+
+          SIGNED_APK_PATH=$(echo "$UNSIGNED_APK_PATH" | sed 's/-unsigned//')
+          echo "Signed APK will be saved to: $SIGNED_APK_PATH"
+
+          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+            --ks $KEYSTORE_PATH \
+            --ks-key-alias "${{ secrets.ANDROID_KEY_ALIAS }}" \
+            --ks-pass pass:"${{ secrets.ANDROID_KEY_PASSWORD }}" \
+            --key-pass pass:"${{ secrets.ANDROID_KEY_PASSWORD }}" \
+            --out "$SIGNED_APK_PATH" \
+            "$UNSIGNED_APK_PATH"
+
+          echo "APK signing process completed."
+
+          $ANDROID_HOME/build-tools/34.0.0/apksigner verify "$SIGNED_APK_PATH"
+          echo "APK signature verified successfully."
+
+          echo "SIGNED_APK_PATH=$SIGNED_APK_PATH" >> "$GITHUB_ENV"
+
+      - name: Rename APK for no-yolo build
+        if: ${{ !matrix.include_yolo }}
+        run: |
+          SIGNED_APK_PATH="${{ env.SIGNED_APK_PATH }}"
+
+          DIRNAME=$(dirname "$SIGNED_APK_PATH")
+          BASENAME=$(basename "$SIGNED_APK_PATH" .apk)
+          NEW_PATH="${DIRNAME}/${BASENAME}-no-yolo.apk"
+
+          echo "Renaming APK from ${SIGNED_APK_PATH} to ${NEW_PATH}"
+          mv "$SIGNED_APK_PATH" "$NEW_PATH"
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jieqibox-android${{ !matrix.include_yolo && '-no-yolo' || '' }}
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/release/*.apk
+            !src-tauri/gen/android/app/build/outputs/apk/**/release/*-unsigned.apk
+          retention-days: 30
+
+  release:
+    name: Append Android Artifacts to Release
+    runs-on: ubuntu-latest
+    needs: [publish-tauri, build-android]
+    permissions:
+      contents: write
+    steps:
+      - name: Download android artifacts (with YOLO)
+        uses: actions/download-artifact@v4
+        with:
+          name: jieqibox-android
+          path: jieqibox-android
+
+      - name: Download android artifacts (no YOLO)
+        uses: actions/download-artifact@v4
+        with:
+          name: jieqibox-android-no-yolo
+          path: jieqibox-android-no-yolo
+
+      - name: Add Android assets to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            jieqibox-android/**/*.apk
+            jieqibox-android/**/*.aab
+            jieqibox-android-no-yolo/**/*.apk
+            jieqibox-android-no-yolo/**/*.aab
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

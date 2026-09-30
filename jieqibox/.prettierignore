@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+dist/
+target/
+
+# Build outputs
+build/
+out/
+
+# Log files
+*.log
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Images and binary files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.woff
+*.woff2
+*.ttf
+*.eot
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+
+# Others
+*.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Tauri related
+src-tauri/target/
+src-tauri/gen/ 
