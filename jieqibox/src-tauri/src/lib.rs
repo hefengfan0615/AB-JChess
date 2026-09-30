@@ -24,6 +24,30 @@ use opening_book::{JieqiOpeningBook, MoveData, OpeningBookStats, AddEntryRequest
 type EngineProcess = Arc<Mutex<Option<CommandChild>>>;
 // -------------------------------------------------------------
 
+// ---------------------------------------------------------------------
+// Bundled engine + NNUE (embedded at compile time, Android only).
+//
+// The CI pipeline compiles src/AB-JChess (arm64) and downloads the NNUE
+// network, then drops both files into src-tauri/engine-assets/. Here we
+// embed them into the native Rust lib with include_bytes! so the final APK
+// ships with a ready-to-run engine. On first launch the UI calls
+// extract_bundled_engine to materialize them into internal storage and
+// register them automatically - the user never has to add a load an engine.
+//
+// These are gated behind target_os = "android" so desktop builds (which do
+// not have engine-assets/) are unaffected.
+// ---------------------------------------------------------------------
+#[cfg(target_os = "android")]
+const BUNDLED_ENGINE_NAME: &str = "AB-JChess";
+#[cfg(target_os = "android")]
+const BUNDLED_ENGINE_BYTES: &[u8] = include_bytes!("../engine-assets/AB-JChess");
+#[cfg(target_os = "android")]
+const BUNDLED_NNUE_NAME: &str = "abjchess-20260911.nnue";
+#[cfg(target_os = "android")]
+const BUNDLED_NNUE_BYTES: &[u8] = include_bytes!("../engine-assets/abjchess-20260911.nnue");
+#[cfg(target_os = "android")]
+const BUNDLED_ENGINE_ID: &str = "engine_bundled";
+
 /// Check if the engine file exists and is a file on Android.
 /// This is a prerequisite for setting permissions and spawning.
 #[cfg(target_os = "android")]
@@ -500,6 +524,56 @@ async fn scan_android_engines(app: AppHandle) -> Result<Vec<String>, String> {
     sync_and_list_engines(&app)
 }
 
+/// Materialize the engine + NNUE that are embedded inside this APK into the
+/// app's internal storage (idempotent), and return a ready-to-register
+/// ManagedEngine object so the bundled engine is automatically usable.
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn extract_bundled_engine(app: AppHandle) -> Result<String, String> {
+    let bundle_identifier = &app.config().identifier;
+    let bundle_dir = format!(
+        "/data/data/{}/files/engines/bundled",
+        bundle_identifier
+    );
+    fs::create_dir_all(&bundle_dir).map_err(|e| format!("Failed to create bundled engine dir: {}", e))?;
+
+    let engine_path = format!("{}/{}", bundle_dir, BUNDLED_ENGINE_NAME);
+    if !Path::new(&engine_path).exists() {
+        fs::write(&engine_path, BUNDLED_ENGINE_BYTES)
+            .map_err(|e| format!("Failed to write bundled engine: {}", e))?;
+    }
+    // The engine must be executable to be spawned.
+    {
+        let mut perms = fs::metadata(&engine_path)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&engine_path, perms).map_err(|e| e.to_string())?;
+    }
+
+    let nnue_path = format!("{}/{}", bundle_dir, BUNDLED_NNUE_NAME);
+    if !Path::new(&nnue_path).exists() {
+        fs::write(&nnue_path, BUNDLED_NNUE_BYTES)
+            .map_err(|e| format!("Failed to write bundled NNUE: {}", e))?;
+    }
+
+    let _ = app.emit(
+        "engine-output",
+        format!(
+            "[DEBUG] Bundled engine extracted: engine={} nnue={}",
+            engine_path, nnue_path
+        ),
+    );
+
+    let engine_data = serde_json::json!({
+        "id": BUNDLED_ENGINE_ID,
+        "name": "丰帆揭棋引擎 (内置)",
+        "path": engine_path,
+        "args": ""
+    });
+    serde_json::to_string(&engine_data).map_err(|e| e.to_string())
+}
+
 /// Emits an event to the Android native side to request a file via SAF.
 #[cfg(target_os = "android")]
 #[tauri::command]
@@ -892,6 +966,8 @@ pub fn run() {
             check_android_file_permissions,
             #[cfg(target_os = "android")]
             scan_android_engines,
+            #[cfg(target_os = "android")]
+            extract_bundled_engine,
             #[cfg(target_os = "android")]
             request_saf_file_selection,
             #[cfg(target_os = "android")]

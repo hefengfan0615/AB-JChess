@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useConfigManager, type ManagedEngine } from './useConfigManager' // Import new types
 import { useInterfaceSettings } from './useInterfaceSettings'
 import { useSoundEffects } from './useSoundEffects'
+import { isAndroidPlatform } from '../utils/platform'
 import { uciToChineseMoves } from '@/utils/chineseNotation'
 import {
   evaluateAdvancedScript,
@@ -504,6 +505,34 @@ export function useUciEngine(generateFen: () => string, gameState: any) {
 
     const configManager = useConfigManager()
     await configManager.loadConfig()
+
+    // On Android the bundled engine (丰帆揭棋引擎) is embedded in the APK.
+    // Materialize it, register it once, and load it automatically so the
+    // user never has to manually add or load an engine.
+    if (isAndroidPlatform()) {
+      try {
+        const bundledEngineJson = await invoke<string>('extract_bundled_engine')
+        const bundledEngine = JSON.parse(bundledEngineJson) as ManagedEngine
+        const engines = configManager.getEngines()
+        if (!engines.some(e => e.path === bundledEngine.path)) {
+          engines.push(bundledEngine)
+          await configManager.saveEngines(engines)
+          console.log(
+            `[DEBUG] Auto-loading: Registered bundled engine: ${bundledEngine.name}`
+          )
+        }
+        // If nothing was previously selected, use the bundled engine now.
+        const prevSelected = configManager.getLastSelectedEngineId()
+        if (!prevSelected && currentEngine.value === null) {
+          await configManager.saveLastSelectedEngineId(bundledEngine.id)
+          await loadEngine(bundledEngine)
+          return
+        }
+      } catch (e) {
+        console.error('[DEBUG] Auto-loading: Failed to prepare bundled engine:', e)
+      }
+    }
+
     const lastEngineId = configManager.getLastSelectedEngineId()
     if (lastEngineId) {
       const engines = configManager.getEngines()

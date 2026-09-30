@@ -1,0 +1,9 @@
+# Bundled engine assets (filled in by CI before the Android build)
+#
+# The GitHub Actions workflow:
+#   1. compiles  ../src/AB-JChess  (arm64) into  ./AB-JChess
+#   2. downloads abjchess-20260911.nnue and copies it here as  ./abjchess-20260911.nnue
+#
+# These two files are embedded into the Rust lib via include_bytes! (Android
+# only, see src-tauri/src/lib.rs) and shipped inside the final APK, so end
+# users do not need to add or load an engine manually.
