@@ -143,7 +143,7 @@ jobs:
         working-directory: jieqibox
         run: |
           npm install -g @tauri-apps/cli
-          npx tauri android build --bundles apk
+          npx tauri android build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_BUNDLE_IDENTIFIER_SUFFIX: '-no-yolo'
