@@ -162,8 +162,11 @@ jobs:
             find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk'
             exit 1
           fi
-          echo "UNIVERSAL_RELEASE_APK=$APK_PATH" >> "$GITHUB_ENV"
-          echo "Found APK: $APK_PATH"
+          # Store an ABSOLUTE path so later steps (which run at repo root) can
+          # open the file regardless of their working directory.
+          APK_ABS="$GITHUB_WORKSPACE/jieqibox/$APK_PATH"
+          echo "UNIVERSAL_RELEASE_APK=$APK_ABS" >> "$GITHUB_ENV"
+          echo "Found APK: $APK_ABS"
 
       - name: Auto-generate signing key & sign the APK
         run: |
