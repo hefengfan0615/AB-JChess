@@ -70,11 +70,21 @@ jobs:
           make objclean
           make -j2 build ARCH=x86-64 COMP=gcc
           cd ..
-          printf 'uci\nisready\nposition startpos\ngo movetime 5000\nquit\n' \
-            | timeout 120 ./src/AB-JChess | tee engine_test.log
+          # NOTE: 'go' starts the search asynchronously; UCI reads the next
+          # command immediately afterwards. Piping 'quit' right after 'go'
+          # would cancel the search instantly (no "info depth", an instant
+          # fallback bestmove). Delay 'stop' so the search actually runs for
+          # the full movetime and emit "info depth" lines.
+          {
+            printf 'uci\nisready\nposition startpos\ngo movetime 5000\n'
+            sleep 7
+            printf 'stop\nquit\n'
+          } | timeout 120 ./src/AB-JChess | tee engine_test.log
           echo "---- assertions ----"
           grep -q "model loaded.*$NNUE_FILE" engine_test.log \
             && echo "OK: NNUE loaded into engine"
+          grep -q "info depth" engine_test.log \
+            && echo "OK: search produced info depth output"
           grep -q "bestmove" engine_test.log \
             && echo "OK: go movetime 5000 returned a bestmove"
 
