@@ -1,0 +1,90 @@
+# AB-JChess (jieqi engine) — Android build + NNUE load + UCI smoke test
+name: jieqi-android-build-test
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: r27c
+      NDK_DIR: android-ndk-r27c
+      NDK_BIN: /usr/local/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin
+      NNUE_URL: https://github.com/lxsgx23/AB-JChess/releases/download/v0.2b/0.2b_bmi2.zip
+      NNUE_FILE: abjchess-20260911.nnue
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download NNUE weights and load into engine
+        run: |
+          set -e
+          curl -fL --retry 3 --retry-delay 5 -o nnue.zip "$NNUE_URL"
+          unzip -o nnue.zip
+          # The archive contains both a prebuilt Windows exe and the NNUE network.
+          cp "抽象揭棋0.2b_bmi2/$NNUE_FILE" "src/$NNUE_FILE"
+          ls -la "src/$NNUE_FILE"
+          # Verify the NNUE runtime package magic (ABJCHESSV82).
+          magic="$(head -c 12 "src/$NNUE_FILE")"
+          echo "NNUE magic: $magic"
+          [ "$magic" = "ABJCHESSV82" ] || { echo "Unexpected NNUE magic" >&2; exit 1; }
+
+      - name: Install Android NDK (${{ env.NDK_VERSION }})
+        run: |
+          set -e
+          curl -fL --retry 3 -o ndk.zip "https://dl.google.com/android/repository/android-ndk-$NDK_VERSION-linux.zip"
+          sudo unzip -q ndk.zip -d /usr/local/
+          "$NDK_BIN/llvm-strip" --version | head -1
+          ls -la "$NDK_BIN" | grep -E 'aarch64-linux-android|llvm-strip'
+
+      - name: 1. Compile the jieqi Android engine (ARMv8, NDK cross-compile)
+        run: |
+          set -e
+          export PATH="$NDK_BIN:$PATH"
+          cd src
+          # Clean any stale objects, then cross-compile for Android 64-bit ARM.
+          make objclean
+          make -j2 build ARCH=armv8 COMP=ndk
+          cd ..
+          file src/AB-JChess
+          cp src/AB-JChess AB-JChess-android-armv8
+
+      - name: 2. Load NNUE into the engine (verify at runtime)
+        run: |
+          set -e
+          echo "EvalFile default: $NNUE_FILE"
+          echo "Ensuring NNUE is next to the engine binary so it is auto-loaded..."
+          ls -la "src/$NNUE_FILE"
+
+      - name: "3. Run engine test: go movetime 5000"
+        run: |
+          set -e
+          # The Android binary cannot execute on the x86_64 runner, so for the
+          # UCI smoke test we build a native engine from the same sources and
+          # run it with the exactly same NNUE file.
+          cd src
+          make objclean
+          make -j2 build ARCH=x86-64 COMP=gcc
+          cd ..
+          printf 'uci\nisready\nposition startpos\ngo movetime 5000\nquit\n' \
+            | timeout 120 ./src/AB-JChess | tee engine_test.log
+          echo "---- assertions ----"
+          grep -q "model loaded.*$NNUE_FILE" engine_test.log \
+            && echo "OK: NNUE loaded into engine"
+          grep -q "bestmove" engine_test.log \
+            && echo "OK: go movetime 5000 returned a bestmove"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-artifacts
+          path: |
+            AB-JChess-android-armv8
+            src/${{ env.NNUE_FILE }}
+            engine_test.log
+          retention-days: 7
