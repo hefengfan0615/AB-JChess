@@ -153,8 +153,10 @@ jobs:
         working-directory: jieqibox
         run: |
           set -e
+          # Tauri 2 does not sign the APK itself; the generated artifact is
+          # "*-unsigned.apk" and our own step signs it afterwards.
           APK_PATH=$(find src-tauri/gen/android/app/build/outputs/apk -type f \
-            -name 'app-universal-release*.apk' ! -name '*-unsigned.apk' | head -n 1)
+            -name 'app-universal-release-unsigned.apk' | head -n 1)
           if [ -z "$APK_PATH" ]; then
             echo "No universal release APK produced. Listing outputs:"
             find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk'
