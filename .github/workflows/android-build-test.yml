@@ -87,18 +87,33 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 34
-          ndk: 26.1.10909125
-          build-tools: '34.0.0'
-
-      - name: Export NDK environment variables
+      - name: Prepare Android SDK (preinstalled on runner)
         run: |
-          NDK_PATH="${ANDROID_NDK_ROOT:-$ANDROID_NDK_LATEST_HOME}"
-          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
-          echo "NDK_HOME=$NDK_PATH"          >> "$GITHUB_ENV"
+          set -e
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME"   >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+
+          # The Tauri Android build compiles the Rust lib via the installed
+          # NDK. Reuse the NDK r27c already downloaded for the engine build.
+          echo "ANDROID_NDK_HOME=/usr/local/$NDK_DIR" >> "$GITHUB_ENV"
+          echo "NDK_HOME=/usr/local/$NDK_DIR"         >> "$GITHUB_ENV"
+
+          # sdkmanager lives under a versioned cmdline-tools dir on hosted runners.
+          CMDTOOLS=$(ls -1 "$ANDROID_HOME/cmdline-tools" 2>/dev/null | head -n1)
+          SM="$ANDROID_HOME/cmdline-tools/$CMDTOOLS/bin/sdkmanager"
+          if [ ! -x "$SM" ]; then SM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"; fi
+          echo "Using sdkmanager: $SM"
+          yes | "$SM" --licenses >/dev/null 2>&1 || true
+          # Useful components are usually preinstalled; this just ensures the
+          # required compileSdk platform + build-tools are present.
+          "$SM" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
+
+          test -d "$ANDROID_HOME/platforms/android-34" || echo "WARN: android-34 platform not found"
+          NEWEST_BUILD_TOOLS=$(ls -1d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -n1)
+          echo "BUILD_TOOLS_DIR=$NEWEST_BUILD_TOOLS" >> "$GITHUB_ENV"
+          echo "Build tools: $NEWEST_BUILD_TOOLS"
 
       - name: Setup Rust (Android targets)
         uses: dtolnay/rust-toolchain@stable
@@ -161,7 +176,8 @@ jobs:
             -dname "CN=FengFan Jieqi, OU=Release, O=AB-JChess, L=Guangzhou, C=CN"
 
           SIGNED_APK="$RUNNER_TEMP/$RELEASE_NAME.apk"
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign \
+          apksigner() { "$BUILD_TOOLS_DIR/apksigner" "$@"; }
+          apksigner sign \
             --ks "$KEYSTORE_PATH" \
             --ks-key-alias fengfan \
             --ks-pass "pass:$SRAPASS" \
@@ -169,7 +185,7 @@ jobs:
             --out "$SIGNED_APK" \
             "$UNIVERSAL_RELEASE_APK"
 
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify "$SIGNED_APK"
+          apksigner verify "$SIGNED_APK"
           echo "APK signed and verified successfully."
           echo "SIGNED_APK=$SIGNED_APK" >> "$GITHUB_ENV"
 
