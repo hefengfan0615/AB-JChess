@@ -25,14 +25,18 @@ type EngineProcess = Arc<Mutex<Option<CommandChild>>>;
 // -------------------------------------------------------------
 
 // ---------------------------------------------------------------------
-// Bundled engine + NNUE (embedded at compile time, Android only).
+// Bundled engine + NNUE (Android only).
 //
-// The CI pipeline compiles src/AB-JChess (arm64) and downloads the NNUE
-// network, then drops both files into src-tauri/engine-assets/. Here we
-// embed them into the native Rust lib with include_bytes! so the final APK
-// ships with a ready-to-run engine. On first launch the UI calls
-// extract_bundled_engine to materialize them into internal storage and
-// register them automatically - the user never has to add a load an engine.
+// ENGINE: embedded at compile time with include_bytes!. The CI pipeline
+// compiles src/AB-JChess (arm64) and drops it into src-tauri/engine-assets/;
+// the binary is small, so duplicating it per-ABI is negligible.
+//
+// NNUE: deliberately NOT embedded here. A universal APK contains 4 ABI
+// variants of the Rust JNI lib; embedding the ~130MB network via
+// include_bytes! would stamp a full copy into each variant (~520MB total).
+// Instead the NNUE is packaged ONCE as an Android raw asset
+// (assets/nnue/abjchess-20260911.nnue) and copied into the bundled engine
+// dir by MainActivity at launch; extract_bundled_engine just waits for it.
 //
 // These are gated behind target_os = "android" so desktop builds (which do
 // not have engine-assets/) are unaffected.
@@ -43,8 +47,6 @@ const BUNDLED_ENGINE_NAME: &str = "AB-JChess";
 const BUNDLED_ENGINE_BYTES: &[u8] = include_bytes!("../engine-assets/AB-JChess");
 #[cfg(target_os = "android")]
 const BUNDLED_NNUE_NAME: &str = "abjchess-20260911.nnue";
-#[cfg(target_os = "android")]
-const BUNDLED_NNUE_BYTES: &[u8] = include_bytes!("../engine-assets/abjchess-20260911.nnue");
 #[cfg(target_os = "android")]
 const BUNDLED_ENGINE_ID: &str = "engine_bundled";
 
@@ -552,9 +554,18 @@ async fn extract_bundled_engine(app: AppHandle) -> Result<String, String> {
     }
 
     let nnue_path = format!("{}/{}", bundle_dir, BUNDLED_NNUE_NAME);
+    // The NNUE is not embedded in this lib (that would duplicate the ~130MB
+    // network per ABI in a universal APK). MainActivity copies it once from the
+    // packaged raw asset (assets/nnue/*) into this dir at launch; wait for it
+    // so the engine never spawns before the network is present.
+    for _ in 0..600 {
+        if Path::new(&nnue_path).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     if !Path::new(&nnue_path).exists() {
-        fs::write(&nnue_path, BUNDLED_NNUE_BYTES)
-            .map_err(|e| format!("Failed to write bundled NNUE: {}", e))?;
+        return Err(format!("Bundled NNUE not found at {}", nnue_path));
     }
 
     let _ = app.emit(

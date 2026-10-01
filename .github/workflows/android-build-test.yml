@@ -62,19 +62,27 @@ jobs:
           cd ..
           file src/AB-JChess
 
-      - name: Place engine + NNUE into the APK build assets
+      - name: Place engine + NNUE into the APK
         run: |
           set -e
+          # 1) ENGINE -> embedded in the Rust lib via include_bytes! (small; the
+          # per-ABI duplication in a universal APK is negligible).
           mkdir -p "$BUNDLED_ENGINE_DIR"
           cp src/AB-JChess "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
-          cp "src/$NNUE_FILE" "$BUNDLED_ENGINE_DIR/$NNUE_FILE"
           chmod 755 "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
-          ls -la "$BUNDLED_ENGINE_DIR"
-          # The Rust backend embeds these two files with include_bytes!, so they
-          # must exist before the Android Rust lib is compiled (desktop builds
-          # are unaffected because the embed is gated behind target_os=android).
+
+          # 2) NNUE -> a single Android raw asset. Do NOT embed it via
+          # include_bytes!: a universal APK carries 4 ABI variants of the Rust
+          # JNI lib, so embedding the ~130MB network would stamp 4 copies
+          # (~520MB). As one packaged asset it appears exactly once, and
+          # MainActivity copies it into the bundled engine dir at launch.
+          ANDROID_ASSETS="jieqibox/src-tauri/gen/android/app/src/main/assets"
+          mkdir -p "$ANDROID_ASSETS/nnue"
+          cp "src/$NNUE_FILE" "$ANDROID_ASSETS/nnue/$NNUE_FILE"
+
+          ls -la "$BUNDLED_ENGINE_DIR" "$ANDROID_ASSETS/nnue"
           test -s "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
-          test -s "$BUNDLED_ENGINE_DIR/$NNUE_FILE"
+          test -s "$ANDROID_ASSETS/nnue/$NNUE_FILE"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

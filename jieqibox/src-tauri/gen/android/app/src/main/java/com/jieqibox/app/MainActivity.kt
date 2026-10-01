@@ -58,6 +58,36 @@ class MainActivity : TauriActivity() {
         
         // Listen for Tauri events
         setupTauriEventListeners()
+
+        // Materialize the bundled NNUE (packaged once as a raw asset, not
+        // embedded per-ABI) so a universal APK only carries a single copy.
+        // Must finish before the engine spawns (extract_bundled_engine waits).
+        copyBundledNnueAsset()
+    }
+
+    // Copy assets/nnue/abjchess-20260911.nnue -> files/engines/bundled/.
+    // The Rust extract_bundled_engine uses the same dir (config().identifier
+    // equals this applicationId), so futures and engine stay colocated.
+    private fun copyBundledNnueAsset() {
+        try {
+            val targetDir = File(filesDir, "engines/bundled")
+            if (!targetDir.exists()) {
+                targetDir.mkdirs()
+            }
+            val target = File(targetDir, "abjchess-20260911.nnue")
+            if (target.exists() && target.length() > 0) {
+                return
+            }
+            assets.open("nnue/abjchess-20260911.nnue").use { input ->
+                FileOutputStream(target).use { output ->
+                    input.copyTo(output, bufferSize = 1 shl 16)
+                    output.flush()
+                }
+            }
+            Log.d(TAG, "Bundled NNUE copied to ${target.absolutePath} (${target.length()} bytes)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy bundled NNUE from assets", e)
+        }
     }
     
     private fun setupTauriEventListeners() {
