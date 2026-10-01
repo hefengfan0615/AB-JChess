@@ -1865,6 +1865,20 @@
     }
   }
 
+  // Reflect the currently loaded engine into the dropdown so its name is
+  // always visible. This is important for the bundled engine that auto-loads
+  // on Android (directly via loadEngine) without the user touching the selector.
+  watch(
+    () => engineState.currentEngine?.value,
+    async newEngine => {
+      if (!newEngine?.id) return
+      await refreshManagedEngines()
+      if (selectedEngineId.value !== newEngine.id) {
+        selectedEngineId.value = newEngine.id
+      }
+    }
+  )
+
   // Auto-unload current engine when selection changes to avoid mismatch
   watch(selectedEngineId, async (newId, oldId) => {
     if (!oldId || newId === oldId) return
