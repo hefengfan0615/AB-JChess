@@ -20,6 +20,8 @@ env:
   NDK_BIN: /usr/local/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin
   NNUE_URL: https://github.com/lxsgx23/AB-JChess/releases/download/v0.2c/0.2c_bmi2.zip
   NNUE_FILE: abjchess-20261004.nnue
+  # Directory inside the downloaded zip that contains the .nnue file.
+  NNUE_UNZIP_DIR: 0.2c_bmi2
   BUNDLED_ENGINE_DIR: jieqibox/src-tauri/engine-assets
   BUNDLED_ENGINE_NAME: AB-JChess
   RELEASE_TAG: v0.7.2-fengfan
@@ -39,9 +41,9 @@ jobs:
           set -e
           curl -fL --retry 3 --retry-delay 5 -o nnue.zip "$NNUE_URL"
           unzip -o nnue.zip
-          cp "0.2c_bmi2/$NNUE_FILE" "0.2c_bmi2/$NNUE_FILE"
-          ls -la "0.2c_bmi2/$NNUE_FILE"
-          magic="$(head -c 12 "src/$NNUE_FILE")"
+          ls -la "$NNUE_UNZIP_DIR/$NNUE_FILE"
+          # ABJCHESSV82 is 11 bytes; read exactly 11 bytes to compare.
+          magic="$(head -c 11 "$NNUE_UNZIP_DIR/$NNUE_FILE")"
           echo "NNUE magic: $magic"
           [ "$magic" = "ABJCHESSV82" ] || { echo "Unexpected NNUE magic" >&2; exit 1; }
 
@@ -78,7 +80,7 @@ jobs:
           # MainActivity copies it into the bundled engine dir at launch.
           ANDROID_ASSETS="jieqibox/src-tauri/gen/android/app/src/main/assets"
           mkdir -p "$ANDROID_ASSETS/nnue"
-          cp "src/$NNUE_FILE" "$ANDROID_ASSETS/nnue/$NNUE_FILE"
+          cp "$NNUE_UNZIP_DIR/$NNUE_FILE" "$ANDROID_ASSETS/nnue/$NNUE_FILE"
 
           ls -la "$BUNDLED_ENGINE_DIR" "$ANDROID_ASSETS/nnue"
           test -s "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
@@ -230,7 +232,7 @@ jobs:
             内置揭棋引擎（AB-JChess）与 NNUE 权重，安装后无需额外加载引擎，直接对弈。
 
             - 引擎：AB-JChess（arm64-v8a）
-            - 权重：abjchess-20260911.nnue
+            - 权重：${{ env.NNUE_FILE }}
             - 基于 JieqiBox 构建，去除 YOLO 图像识别模块
             - APK 已自动签名，可直接安装
           files: ${{ env.SIGNED_APK }}
