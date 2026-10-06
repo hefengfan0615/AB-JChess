@@ -18,8 +18,8 @@ env:
   NDK_VERSION: r27c
   NDK_DIR: android-ndk-r27c
   NDK_BIN: /usr/local/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin
-  NNUE_URL: https://github.com/lxsgx23/AB-JChess/releases/download/v0.2b/0.2b_bmi2.zip
-  NNUE_FILE: abjchess-20260911.nnue
+  NNUE_URL: https://github.com/lxsgx23/AB-JChess/releases/download/v0.2c/0.2c_bmi2.zip
+  NNUE_FILE: abjchess-20261004.nnue
   BUNDLED_ENGINE_DIR: jieqibox/src-tauri/engine-assets
   BUNDLED_ENGINE_NAME: AB-JChess
   RELEASE_TAG: v0.7.2-fengfan
@@ -39,7 +39,7 @@ jobs:
           set -e
           curl -fL --retry 3 --retry-delay 5 -o nnue.zip "$NNUE_URL"
           unzip -o nnue.zip
-          cp "抽象揭棋0.2b_bmi2/$NNUE_FILE" "src/$NNUE_FILE"
+          cp "0.2c_bmi2/$NNUE_FILE" "src/$NNUE_FILE"
           ls -la "src/$NNUE_FILE"
           magic="$(head -c 12 "src/$NNUE_FILE")"
           echo "NNUE magic: $magic"
