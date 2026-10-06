@@ -46,7 +46,7 @@ const BUNDLED_ENGINE_NAME: &str = "AB-JChess";
 #[cfg(target_os = "android")]
 const BUNDLED_ENGINE_BYTES: &[u8] = include_bytes!("../engine-assets/AB-JChess");
 #[cfg(target_os = "android")]
-const BUNDLED_NNUE_NAME: &str = "abjchess-20260911.nnue";
+const BUNDLED_NNUE_NAME: &str = "abjchess-20261004.nnue";
 #[cfg(target_os = "android")]
 const BUNDLED_ENGINE_ID: &str = "engine_bundled";
 
