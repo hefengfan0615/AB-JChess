@@ -39,8 +39,8 @@ jobs:
           set -e
           curl -fL --retry 3 --retry-delay 5 -o nnue.zip "$NNUE_URL"
           unzip -o nnue.zip
-          cp "0.2c_bmi2/$NNUE_FILE" "src/$NNUE_FILE"
-          ls -la "src/$NNUE_FILE"
+          cp "0.2c_bmi2/$NNUE_FILE" "0.2c_bmi2/$NNUE_FILE"
+          ls -la "0.2c_bmi2/$NNUE_FILE"
           magic="$(head -c 12 "src/$NNUE_FILE")"
           echo "NNUE magic: $magic"
           [ "$magic" = "ABJCHESSV82" ] || { echo "Unexpected NNUE magic" >&2; exit 1; }
