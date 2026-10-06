@@ -42,10 +42,12 @@ jobs:
           curl -fL --retry 3 --retry-delay 5 -o nnue.zip "$NNUE_URL"
           unzip -o nnue.zip
           ls -la "$NNUE_UNZIP_DIR/$NNUE_FILE"
-          # ABJCHESSV82 is 11 bytes; read exactly 11 bytes to compare.
+          # Only check the "ABJCHESSV" prefix; the trailing version digits can
+          # change between releases (V11, V82, ...) without breaking CI.
           magic="$(head -c 9 "$NNUE_UNZIP_DIR/$NNUE_FILE")"
           echo "NNUE magic prefix: $magic"
           [ "$magic" = "ABJCHESSV" ] || { echo "Unexpected NNUE magic: $magic" >&2; exit 1; }
+
       - name: Install Android NDK (${{ env.NDK_VERSION }})
         run: |
           set -e
@@ -57,11 +59,11 @@ jobs:
         run: |
           set -e
           export PATH="$NDK_BIN:$PATH"
-          cd src
+          cd abjchess/src
           make objclean
           make -j2 build ARCH=armv8 COMP=ndk
-          cd ..
-          file src/AB-JChess
+          cd ../..
+          file abjchess/src/AB-JChess
 
       - name: Place engine + NNUE into the APK
         run: |
@@ -69,7 +71,7 @@ jobs:
           # 1) ENGINE -> embedded in the Rust lib via include_bytes! (small; the
           # per-ABI duplication in a universal APK is negligible).
           mkdir -p "$BUNDLED_ENGINE_DIR"
-          cp src/AB-JChess "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
+          cp abjchess/src/AB-JChess "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
           chmod 755 "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
 
           # 2) NNUE -> a single Android raw asset. Do NOT embed it via
