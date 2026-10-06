@@ -8,7 +8,7 @@ AB-JChess is a free, open-source UCI engine for **Jieqi** (also known as "uncove
 
 - **NNUE Evaluation** — uses an efficiently updatable neural network (NNUE) for fast, accurate position assessment, following the approach pioneered by Stockfish and Pikafish.
 - **UCI Protocol** — compatible with any UCI-capable GUI.
-- **V8.2 NNUE Trainer** — includes a PyTorch-based training pipeline with feature encoding, distributed training support, checkpoint validation, and runtime serialization.
+- **V11 NNUE Trainer** — includes a PyTorch-based training pipeline with feature encoding, distributed training support, checkpoint validation, and runtime serialization.
 - **Configurable EvalFile** — you can load custom NNUE network files at runtime via the `EvalFile` UCI option.
 - **Cross-platform** — builds on Windows, Linux, and macOS.
 
@@ -48,18 +48,18 @@ The `abjchess-nnue-pytorch/` directory contains the complete training pipeline f
 
 2. **Build the native data loader** (if required):
    ```bash
-   cmake -S . -B build-v8 -DCMAKE_BUILD_TYPE=RelWithDebInfo
-   cmake --build build-v8 --config RelWithDebInfo
+   cmake -S . -B build-v11 -DCMAKE_BUILD_TYPE=RelWithDebInfo
+   cmake --build build-v11 --config RelWithDebInfo
    ```
 
 3. **Train the network**:
    ```bash
-   python train_v8.py --features HalfKAv2_hm_jieqi_v8 --gpus 1
+   python train_v11.py --features HalfKAv2_hm_jieqi_v8 --gpus 1
    ```
 
 4. **Export a runtime package**:
    ```bash
-   python serialize_v8.py --features HalfKAv2_hm_jieqi_v8 \
+   python serialize_v11.py --features HalfKAv2_hm_jieqi_v11 \
        --probability-score-to-mass <file> \
        --probability-mass-to-score <file>
    ```
