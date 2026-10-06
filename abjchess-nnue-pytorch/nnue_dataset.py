@@ -17,16 +17,16 @@ JIEQI_V3_FEATURE_SETS = {
     "HalfKAv2_hm_jieqi_v3_fullthreats^",
 }
 
-# V8 uses the jqv4 binary observation layout with its own loader dispatch and
-# model ABI. Keep this set separate from the V3 feature names so a V8 training
-# invocation cannot silently select the wrong feature encoder.
-JIEQI_V8_FEATURE_SETS = {
-    "HalfKAv2_hm_jieqi_v8",
-    "HalfKAv2_hm_jieqi_v8^",
+# V11 uses the jqv4 binary observation layout with its own loader dispatch and
+# model ABI. Keep this set separate from other feature names so a V11 training
+# invocation cannot silently select a different feature encoder.
+JIEQI_V11_FEATURE_SETS = {
+    "HalfKAv2_hm_jieqi_v11",
+    "HalfKAv2_hm_jieqi_v11^",
 }
-JIEQI_FEATURE_SETS = JIEQI_V3_FEATURE_SETS | JIEQI_V8_FEATURE_SETS
+JIEQI_FEATURE_SETS = JIEQI_V11_FEATURE_SETS
 
-JQV4_MANIFEST_SCHEMA = "abjchess-v8-jqv4-manifest-v1"
+JQV4_MANIFEST_SCHEMA = "abjchess-v11-jqv4-manifest-v1"
 
 C_INT_MIN = -(1 << 31)
 C_INT_MAX = (1 << 31) - 1
@@ -70,10 +70,10 @@ def _checked_sparse_stream_arguments(
 def find_training_data_loader(directory=None, platform=sys.platform):
     """Find the native stream library used by this training process.
 
-    ``V8_TRAINING_DATA_LOADER`` may point at an explicit DLL. A runner can use
-    this to load a freshly-built V8 library without copying it over another
-    library in the source tree. Directory scanning is retained as the fallback
-    for existing callers.
+    ``V11_TRAINING_DATA_LOADER`` may point at an explicit DLL.  The F-drive
+    runner uses this to load a freshly-built V11 library without copying it
+    over another loader library in the source tree. Directory scanning is
+    retained as the fallback for existing callers.
     """
     if platform.startswith("win"):
         suffix = ".dll"
@@ -82,7 +82,7 @@ def find_training_data_loader(directory=None, platform=sys.platform):
     else:
         suffix = ".so"
     if directory is None:
-        directory = os.environ.get("V8_TRAINING_DATA_LOADER")
+        directory = os.environ.get("V11_TRAINING_DATA_LOADER")
     if directory is not None:
         explicit = os.path.abspath(os.fspath(directory))
         if os.path.isfile(explicit):
@@ -116,9 +116,9 @@ except FileNotFoundError as error:
     sys.exit(1)
 
 if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
-    # The packaged V8 loader is statically linked to the MinGW C++ and
+    # The packaged V11 loader is statically linked to the MinGW C++ and
     # pthread runtimes.  Do not preload same-named DLLs from an MSYS2 install:
-    # Windows resolves those by basename, so another copy can satisfy the
+    # Windows resolves those by basename, so an older copy can satisfy the
     # import and fail with an entry-point error in an otherwise valid process.
     os.add_dll_directory(os.path.dirname(dllpath))
 
@@ -126,11 +126,24 @@ try:
     dll = ctypes.cdll.LoadLibrary(dllpath)
 except OSError as error:
     raise RuntimeError(
-        "cannot load the V8 training_data_loader DLL at "
-        f"{dllpath}. Rebuild it with -DV8_STATIC_MINGW_RUNTIME=ON "
-        "or replace it with the packaged V8 DLL; the loader must not depend "
+        "cannot load the V11 training_data_loader DLL at "
+        f"{dllpath}. Rebuild it with -DV11_STATIC_MINGW_RUNTIME=ON "
+        "or replace it with the packaged V11 DLL; the loader must not depend "
         "on libstdc++-6.dll, libgcc_s_seh-1.dll, or libwinpthread-1.dll."
     ) from error
+
+def require_v11_loader_abi(loader):
+    abi = getattr(loader, "training_data_loader_abi_version", None)
+    if abi is None:
+        raise RuntimeError("V11 loader ABI marker is missing; rebuild the native DLL")
+    abi.argtypes = []
+    abi.restype = ctypes.c_int
+    if abi() != 110:
+        raise RuntimeError("V11 loader ABI mismatch; expected 110")
+
+
+require_v11_loader_abi(dll)
+
 
 class SparseBatch(ctypes.Structure):
     _fields_ = [
@@ -146,13 +159,10 @@ class SparseBatch(ctypes.Structure):
         ('black', ctypes.POINTER(ctypes.c_int)),
         ('white_values', ctypes.POINTER(ctypes.c_float)),
         ('black_values', ctypes.POINTER(ctypes.c_float)),
-        ('psqt_indices', ctypes.POINTER(ctypes.c_int)),
         ('layer_stack_indices', ctypes.POINTER(ctypes.c_int)),
-        # Optional tail field added for the JQv4 V8 stream. The C++ ABI leaves
-        # this null when the field is unavailable, so callers receive ``None``.
+        # JQv4 label-quality weight; unrelated to the NNUE architecture.
         ('eval_weight', ctypes.POINTER(ctypes.c_float)),
-        # Append-only layer-stack blend tail; consumers that do not request it
-        # ignore this field.
+        # Q0.8 blend represented as float / 255. ABI version 100 is required.
         ('layer_stack_blend', ctypes.POINTER(ctypes.c_float)),
     ]
 
@@ -165,7 +175,6 @@ class SparseBatch(ctypes.Structure):
         them = 1.0 - us
         outcome = torch.from_numpy(np.ctypeslib.as_array(self.outcome, shape=(self.size, 1))).pin_memory().to(device=device, non_blocking=True)
         score = torch.from_numpy(np.ctypeslib.as_array(self.score, shape=(self.size, 1))).pin_memory().to(device=device, non_blocking=True)
-        psqt_indices = torch.from_numpy(np.ctypeslib.as_array(self.psqt_indices, shape=(self.size,))).long().pin_memory().to(device=device, non_blocking=True)
         layer_stack_indices = torch.from_numpy(np.ctypeslib.as_array(self.layer_stack_indices, shape=(self.size,))).long().pin_memory().to(device=device, non_blocking=True)
         eval_weight = None
         if bool(self.eval_weight):
@@ -174,21 +183,20 @@ class SparseBatch(ctypes.Structure):
         if include_layer_stack_blend and bool(self.layer_stack_blend):
             layer_stack_blend = torch.from_numpy(np.ctypeslib.as_array(self.layer_stack_blend, shape=(self.size, 1))).pin_memory().to(device=device, non_blocking=True)
         base = (us, them, white_indices, white_values, black_indices,
-                black_values, outcome, score, psqt_indices,
-                layer_stack_indices)
-        # Preserve the Python ABI. Only the manifest-backed JQv4 V8 stream opts
-        # into the optional tail field.
+                black_values, outcome, score, layer_stack_indices, layer_stack_blend)
+        # Preserve the binary-stream Python ABI. Only the manifest-backed JQv4
+        # V11 stream opts into the optional tail field.
         if include_layer_stack_blend:
-            return base + (eval_weight, layer_stack_blend)
+            return base + (eval_weight,)
         return base + (eval_weight,) if include_eval_weight else base
 
 SparseBatchPtr = ctypes.POINTER(SparseBatch)
 
 
 def is_jqv4_manifest(filename) -> bool:
-    """Return whether ``filename`` names a V8 JQv4 manifest.
+    """Return whether ``filename`` names a V11 JQv4 manifest.
 
-    A conventional ``*.jqv8.json``/``*.jqv4.json`` path is treated as a
+    A conventional ``*.jqv11.json``/``*.jqv4.json`` path is treated as a
     manifest even when malformed, so the native loader can report the actual
     JSON error instead of a misleading V3 header error.  Other JSON paths are
     identified by their manifest schema.
@@ -198,7 +206,7 @@ def is_jqv4_manifest(filename) -> bool:
     lowered = path.lower()
     if not lowered.endswith(".json"):
         return False
-    conventional = lowered.endswith(".jqv8.json") or lowered.endswith(
+    conventional = lowered.endswith(".jqv11.json") or lowered.endswith(
         ".jqv4.json"
     )
     try:
@@ -274,8 +282,8 @@ def bind_sparse_stream_functions(loader):
 
 SPARSE_STREAM_BINDINGS = bind_sparse_stream_functions(dll)
 
-# Public aliases for callers. All ctypes metadata is configured by
-# bind_sparse_stream_functions above.
+# Compatibility aliases for existing callers. All ctypes metadata is configured
+# by bind_sparse_stream_functions above.
 create_sparse_batch_stream = SPARSE_STREAM_BINDINGS.create_legacy
 destroy_sparse_batch_stream = SPARSE_STREAM_BINDINGS.destroy
 fetch_next_sparse_batch = SPARSE_STREAM_BINDINGS.fetch_next
@@ -285,7 +293,7 @@ destroy_sparse_batch = SPARSE_STREAM_BINDINGS.destroy_batch
 def _reject_unsupported_multi_rank(feature_set, rank, world_size):
     if (rank != 0 or world_size != 1) and feature_set not in JIEQI_FEATURE_SETS:
         raise RuntimeError(
-            f"multi-rank sparse loading is only supported for Jieqi v3/V8 "
+            f"multi-rank sparse loading is only supported for Jieqi v3/V11 "
             f"feature sets, got {feature_set!r} at rank {rank}/{world_size}"
         )
 
@@ -337,7 +345,7 @@ class TrainingDataProvider:
         self.include_eval_weight = is_jqv4_manifest(filename)
         self.include_layer_stack_blend = (
             self.include_eval_weight
-            and self.feature_set.decode("utf-8").startswith("HalfKAv2_hm_jieqi_v8")
+            and self.feature_set.decode("utf-8").startswith("HalfKAv2_hm_jieqi_v11")
         )
         self.stream = None
         self._owner_pid = os.getpid()
@@ -441,9 +449,9 @@ class SparseBatchDataset(torch.utils.data.IterableDataset):
     self.rank = rank
     self.world_size = world_size
     # JQv4 manifests are JSON descriptors, not V3 binary shards.  Keep the
-    # existing binary-shard inspection (used by scheduling/debug output) while avoiding
-    # an attempted 32-bit magic read from the manifest itself. V8 may still
-    # consume a binary shard, so inspect that path as well.
+    # existing V3 inspection (used by scheduling/debug output) while avoiding
+    # an attempted 32-bit magic read from the manifest itself.  V11 may still
+    # consume a binary stream, so inspect that path as well.
     jqv4_manifest = is_jqv4_manifest(filename)
     self.shard_info = (
         inspect_v3_shard(filename, rank, world_size)
@@ -455,12 +463,17 @@ class SparseBatchDataset(torch.utils.data.IterableDataset):
     return SparseBatchProvider(self.feature_set, self.filename, self.batch_size, cyclic=self.cyclic, num_workers=self.num_workers, filtered=self.filtered, random_fen_skipping=self.random_fen_skipping, device=self.device, rank=self.rank, world_size=self.world_size)
 
 class FixedNumBatchesDataset(torch.utils.data.IterableDataset):
-  def __init__(self, dataset, num_batches):
+  def __init__(self, dataset, num_batches, *, skip_batches=0, fail_on_exhaustion=False):
     super().__init__()
+    if type(skip_batches) is not int or skip_batches < 0:
+      raise ValueError("skip_batches must be a nonnegative integer")
     self.dataset = dataset
     self.num_batches = num_batches
+    self.skip_batches = skip_batches
+    self.fail_on_exhaustion = fail_on_exhaustion
     self._iterator = None
     self._iterator_pid = None
+    self._consumed_batches = 0
 
   def __len__(self):
     return self.num_batches
@@ -474,8 +487,28 @@ class FixedNumBatchesDataset(torch.utils.data.IterableDataset):
     if self._iterator is None or self._iterator_pid != current_pid:
       self._iterator = iter(self.dataset)
       self._iterator_pid = current_pid
+      self._consumed_batches = 0
+      for skipped in range(self.skip_batches):
+        try:
+          next(self._iterator)
+        except StopIteration as exc:
+          raise RuntimeError(
+              f"training stream exhausted while skipping batch {skipped + 1} "
+              f"of {self.skip_batches}; cannot resume past available data"
+          ) from exc
+        self._consumed_batches += 1
     for _ in range(self.num_batches):
-      yield next(self._iterator)
+      try:
+        batch = next(self._iterator)
+      except StopIteration as exc:
+        if self.fail_on_exhaustion:
+          raise RuntimeError(
+              "non-cyclic training stream exhausted after "
+              f"{self._consumed_batches} batches; refusing to repeat training data"
+          ) from exc
+        raise
+      self._consumed_batches += 1
+      yield batch
 
   def __getstate__(self):
     state = self.__dict__.copy()

@@ -7,24 +7,24 @@ endif()
 
 project(training_data_loader)
 
-# The JQv4 common reader is a static dependency of the training data loader.
-# Point JQV4_COMMON_ROOT at a checkout of that reader when building the loader.
+# JQv4's common reader is kept as a static dependency of the V11 training
+# loader.  Disable its standalone test executable in this parent build.
 set(JQV4_BUILD_TESTS OFF CACHE BOOL "Build jqv4 common tests" FORCE)
 set(JQV4_BUILD_RECOVERY OFF CACHE BOOL "Build jqv4 recovery implementation" FORCE)
 set(JQV4_BUILD_WRITER OFF CACHE BOOL "Build jqv4 writer implementation" FORCE)
 
 # zstd is consumed as a static target and may be either an install tree
-# (lib/cmake/zstd)
-# or a direct CMake build tree (zstdConfig.cmake at its root).  Accept both
-# spellings so callers can pass either -DZSTD_DIR/-Dzstd_DIR or -DZSTD_ROOT.
-set(V8_ZSTD_DIR "" CACHE PATH
+# (lib/cmake/zstd) or a direct CMake build tree (zstdConfig.cmake at its root).
+# Accept both spellings so callers can pass either -DZSTD_DIR/-Dzstd_DIR or
+# -DZSTD_ROOT.
+set(V11_ZSTD_DIR "" CACHE PATH
     "Directory containing zstdConfig.cmake (overrides package search)")
 if(DEFINED ZSTD_DIR AND NOT "${ZSTD_DIR}" STREQUAL "")
-    set(V8_ZSTD_DIR "${ZSTD_DIR}" CACHE PATH
+    set(V11_ZSTD_DIR "${ZSTD_DIR}" CACHE PATH
         "Directory containing zstdConfig.cmake (overrides package search)"
         FORCE)
 elseif(DEFINED zstd_DIR AND NOT "${zstd_DIR}" STREQUAL "")
-    set(V8_ZSTD_DIR "${zstd_DIR}" CACHE PATH
+    set(V11_ZSTD_DIR "${zstd_DIR}" CACHE PATH
         "Directory containing zstdConfig.cmake (overrides package search)"
         FORCE)
 endif()
@@ -32,26 +32,26 @@ endif()
 if(DEFINED ZSTD_ROOT AND NOT "${ZSTD_ROOT}" STREQUAL "")
     list(PREPEND CMAKE_PREFIX_PATH "${ZSTD_ROOT}")
     if(EXISTS "${ZSTD_ROOT}/zstdConfig.cmake")
-        set(V8_ZSTD_DIR "${ZSTD_ROOT}" CACHE PATH
+        set(V11_ZSTD_DIR "${ZSTD_ROOT}" CACHE PATH
             "Directory containing zstdConfig.cmake (overrides package search)"
             FORCE)
     elseif(EXISTS "${ZSTD_ROOT}/lib/cmake/zstd/zstdConfig.cmake")
-        set(V8_ZSTD_DIR "${ZSTD_ROOT}/lib/cmake/zstd" CACHE PATH
+        set(V11_ZSTD_DIR "${ZSTD_ROOT}/lib/cmake/zstd" CACHE PATH
             "Directory containing zstdConfig.cmake (overrides package search)"
             FORCE)
     endif()
 endif()
 
-if(NOT "${V8_ZSTD_DIR}" STREQUAL "")
-    set(zstd_DIR "${V8_ZSTD_DIR}" CACHE PATH
+if(NOT "${V11_ZSTD_DIR}" STREQUAL "")
+    set(zstd_DIR "${V11_ZSTD_DIR}" CACHE PATH
         "CMake config directory for zstd" FORCE)
 endif()
 find_package(zstd 1.5.7 EXACT CONFIG REQUIRED)
 if(NOT TARGET zstd::libzstd_static)
     message(FATAL_ERROR
-            "V8 JQv4 loader requires the static zstd::libzstd_static target")
+            "V11 JQv4 loader requires the static zstd::libzstd_static target")
 endif()
-set(JQV4_COMMON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../jieqi_v4_common" CACHE PATH
+set(JQV4_COMMON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../jieqi_v4_common" CACHE PATH
     "Path to the JQv4 common reader source tree")
 if(NOT EXISTS "${JQV4_COMMON_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR "JQV4_COMMON_ROOT must point to a JQv4 common source tree")
@@ -72,6 +72,23 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED 17)
 
 add_library(training_data_loader SHARED training_data_loader.cpp)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(v11_jqv4_shuffle_tests
+                   tests_v11/cpp/test_v11_jqv4_shuffle.cpp)
+    target_include_directories(v11_jqv4_shuffle_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${JQV4_COMMON_ROOT}/include)
+    target_link_libraries(v11_jqv4_shuffle_tests PRIVATE
+                          jqv4_common
+                          zstd::libzstd_static)
+    if(MINGW AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_link_options(v11_jqv4_shuffle_tests PRIVATE
+                            -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME v11_jqv4_shuffle COMMAND v11_jqv4_shuffle_tests)
+endif()
 
 # MinGW's Windows headers hide FILE_ID_INFO/FileIdInfo unless the target
 # Windows version is declared before inclusion.  JQv4 recovery uses that API
@@ -97,20 +114,20 @@ target_link_libraries(training_data_loader PRIVATE
 add_dependencies(training_data_loader jqv4_common)
 
 # The loader is loaded into a long-lived Python process.  A dynamically linked
-# MinGW C++/pthread runtime is unsafe here: another package (or another DLL in
-# System32) can satisfy the same basename with incompatible symbols.  Keep the
-# Windows distribution self-contained while leaving native Unix builds alone.
-option(V8_STATIC_MINGW_RUNTIME
+# MinGW C++/pthread runtime is unsafe here: another package or system DLL can
+# satisfy the same basename with incompatible symbols. Keep the Windows
+# distribution self-contained while leaving native Unix builds alone.
+option(V11_STATIC_MINGW_RUNTIME
        "Statically link the MinGW runtime into the Windows loader" ON)
-if (WIN32 AND V8_STATIC_MINGW_RUNTIME
+if (WIN32 AND V11_STATIC_MINGW_RUNTIME
     AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  find_file(V8_WINPTHREAD_STATIC
+  find_file(V11_WINPTHREAD_STATIC
             NAMES libwinpthread.a
             PATHS ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES}
             NO_DEFAULT_PATH)
-  if (NOT V8_WINPTHREAD_STATIC)
+  if (NOT V11_WINPTHREAD_STATIC)
     message(FATAL_ERROR
-            "V8_STATIC_MINGW_RUNTIME requires a static libwinpthread.a")
+            "V11_STATIC_MINGW_RUNTIME requires a static libwinpthread.a")
   endif()
   set_property(TARGET training_data_loader APPEND_STRING PROPERTY
                LINK_FLAGS
@@ -120,7 +137,7 @@ if (WIN32 AND V8_STATIC_MINGW_RUNTIME
   # cannot fall back to its DLL import library for an unresolved pthread symbol.
   target_link_libraries(training_data_loader PRIVATE
                         "-Wl,--whole-archive"
-                        "${V8_WINPTHREAD_STATIC}"
+                        "${V11_WINPTHREAD_STATIC}"
                         "-Wl,--no-whole-archive")
 endif()
 

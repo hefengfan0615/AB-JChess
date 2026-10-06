@@ -1,4 +1,8 @@
-"""Ranger21 optimizer used by the NNUE trainer."""
+# Ranger21 optimizer adapted for this NNUE trainer.
+#
+# Based on the public Ranger21 implementation by Less Wright and Nestor Demeure.
+# This local copy keeps the AdamW/PNM path used by Stockfish nnue-pytorch and
+# avoids optional plotting/chebyshev dependencies.
 
 import collections
 import math
@@ -171,6 +175,39 @@ class Ranger21(Optimizer):
 
   def __setstate__(self, state):
     super().__setstate__(state)
+
+  def state_dict(self):
+    state = super().state_dict()
+    state["ranger21_runtime"] = {
+      "lookahead_step": self.lookahead_step,
+      "current_iter": self.current_iter,
+      "epoch_count": self.epoch_count,
+      "warmup_complete": self.warmup_complete,
+      "warmup_curr_pct": self.warmup_curr_pct,
+      "current_lr": self.current_lr,
+      "warmdown_displayed": getattr(self, "warmdown_displayed", False),
+    }
+    return state
+
+  def load_state_dict(self, state_dict):
+    super().load_state_dict(state_dict)
+    runtime = state_dict.get("ranger21_runtime")
+    if runtime is None:
+      # NNUE checkpoints update dense parameters on every optimizer step.
+      step = max((int(state.get("step", 0)) for state in self.state.values()), default=0)
+      self.lookahead_step = step % self.lookahead_mergetime if self.lookahead_active else 0
+      self.epoch_count, self.current_iter = divmod(step, self.num_batches_per_epoch)
+      self.warmup_complete = self.use_warmup and step > self.num_warmup_iters
+      if self.use_warmup and step:
+        self.warmup_curr_pct = min(1.0, step / self.num_warmup_iters)
+      return
+    self.lookahead_step = int(runtime["lookahead_step"])
+    self.current_iter = int(runtime["current_iter"])
+    self.epoch_count = int(runtime["epoch_count"])
+    self.warmup_complete = bool(runtime["warmup_complete"])
+    self.warmup_curr_pct = float(runtime["warmup_curr_pct"])
+    self.current_lr = float(runtime["current_lr"])
+    self.warmdown_displayed = bool(runtime["warmdown_displayed"])
 
   def show_settings(self):
     print("Ranger21 optimizer ready with following settings:\n")

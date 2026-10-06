@@ -36,7 +36,7 @@
 #include "jqv4/jqv4_rng.h"
 #include "jqv4/jqv4_sha256.h"
 #include "jqv4/jqv4_wire.h"
-#include "v8_jqv4_shuffle.h"
+#include "v11_jqv4_shuffle.h"
 
 #if defined (_WIN32)
 #define EXPORT __declspec(dllexport)
@@ -85,11 +85,11 @@ static_assert(sizeof(PackedSfenValue) == 270);
 struct Position {
     Piece board[SQUARE_NB]{};
     bool dark[SQUARE_NB]{};
+    Color dark_owner[SQUARE_NB]{};
     int rest[16]{};
     int unknown_loss[2]{};
-    // Raw binary FEN may include an optional ``|U...u...`` suffix. V8 derives
-    // the same values from rest/coloured-dark inventory and treats an explicit
-    // suffix only as a consistency assertion.
+    // The optional ``|U...u...`` suffix is accepted as a consistency
+    // assertion; V11 derives these values from inventory metadata.
     bool unknown_loss_explicit = false;
     Color side = WHITE;
     std::uint16_t gamePly = 0;
@@ -413,7 +413,9 @@ static Square orient(Color color, Square sq)
     }
     else
     {
-        // Use a 180-degree rotation for the black orientation.
+        // IMPORTANT: for now we use rotate180 instead of rank flip
+        //            for compatibility with the stockfish master branch.
+        //            Note that this is inconsistent with nodchip/master.
         return flip_horizontally(flip_vertically(sq));
     }
 }
@@ -1186,18 +1188,34 @@ struct HalfKAv2HmJieqiV3 : HalfKAv2HmJieqiV2 {
     }
 };
 
-// V8 reuses the compact jqv4 board/rest ABI (without the optional full-threat
-// block) while owning its metadata policy. The two unknown-loss groups remain
-// reserved rows and are never active V8 features. Keep a named type and
-// dispatch string so an unrelated feature name cannot be accepted as V8 data.
-struct HalfKAv2HmJieqiV8 : HalfKAv2HmJieqiV3 {
-    static constexpr int INPUTS = 6 * ATTACK_BUCKETS * PS_NB;
+// V11 reuses the jqv4 board/rest ABI without the optional full-threat block and
+// owns its metadata policy. Reserved unknown-loss groups are not active V11
+// features. Keep a named type and dispatch string for the V11 stream.
+struct HalfKAv2HmJieqiV11 : HalfKAv2HmJieqiV3 {
+    static constexpr int BASE_PS_NB = 15 * NUM_SQ;
+    static constexpr int META_NB = 100;
+    static constexpr int PS_NB = BASE_PS_NB + META_NB;
+    static constexpr int INPUTS = 24 * PS_NB;
     static constexpr int MAX_ACTIVE_FEATURES = 160;
 
     struct LayerStackSelection {
         int floor = 0;
         std::uint8_t blend_q8 = 0;
     };
+
+    static int make_index(jieqi::Color perspective, int sq, jieqi::Piece pc,
+                          int bucket, bool mirror) {
+        return PS_NB * bucket + piece_square_index(perspective, pc)
+             + map_square(perspective, sq, mirror);
+    }
+
+    static int dark_rest_index(jieqi::Color perspective, jieqi::Piece pc) {
+        const int ownerOffset = jieqi::color_of(pc) == perspective ? 88 : 94;
+        const int typeOffset = jieqi::type_of(pc) - 1;
+        if (typeOffset < 0 || typeOffset >= 6)
+            throw std::runtime_error("V11 pool feature has an invalid piece type");
+        return BASE_PS_NB + ownerOffset + typeOffset;
+    }
 
     static int interval_residual_num(int value, const int* thresholds,
                                      std::size_t count, int& denominator) {
@@ -1222,7 +1240,7 @@ struct HalfKAv2HmJieqiV8 : HalfKAv2HmJieqiV3 {
         return double(std::clamp(count - lower[bucket], 0, den - 1)) / double(den);
     }
 
-    static HalfKAv2HmJieqiV8::LayerStackSelection layer_stack_selection(const jieqi::Position& pos) {
+    static HalfKAv2HmJieqiV11::LayerStackSelection layer_stack_selection(const jieqi::Position& pos) {
         static constexpr int darkThresholds[] = {0, 1, 5, 9, 17, 33};
         static constexpr int restThresholds[] = {0, 2, 5, 9, 19};
         const int floor = layer_stack_bucket(pos);
@@ -1337,7 +1355,7 @@ struct HalfKAv2HmJieqiV8 : HalfKAv2HmJieqiV3 {
         return std::clamp(base + darkBucket + restBucket, 0, 15);
     }
 
-    static void append_meta_features_v8(
+    static void append_meta_features_v11(
       const jieqi::Position& pos, int bucket, jieqi::Color color,
       int& j, int* features, float* values) {
         const auto enemy = color == jieqi::WHITE ? jieqi::BLACK : jieqi::WHITE;
@@ -1352,11 +1370,11 @@ struct HalfKAv2HmJieqiV8 : HalfKAv2HmJieqiV3 {
         emit(16 + bucket8(rest_count(pos, color)));
         emit(24 + bucket8(rest_count(pos, enemy)));
         emit(32 + dark_density_bucket(dark_count(pos)));
-        emit(40 + std::min(pos.unknown_loss[color], 3));
-        emit(44 + std::min(pos.unknown_loss[enemy], 3));
+        emit(40 + std::clamp(pos.unknown_loss[color], 0, 15));
+        emit(56 + std::clamp(pos.unknown_loss[enemy], 0, 15));
         const auto threats = visible_threat_summary(pos, color);
-        emit(48 + std::min(threats[0], 7));
-        emit(56 + std::min(threats[1], 7));
+        emit(72 + std::clamp(threats[0], 0, 7));
+        emit(80 + std::clamp(threats[1], 0, 7));
     }
 
     static std::pair<int, int> fill_features_sparse(
@@ -1373,9 +1391,15 @@ struct HalfKAv2HmJieqiV8 : HalfKAv2HmJieqiV3 {
             if (e.pos.board[sq] == jieqi::NO_PIECE)
                 continue;
             values[j] = 1.0f;
-            features[j] = make_index(
-                color, sq, e.pos.dark[sq] ? jieqi::DARK_PIECE : e.pos.board[sq],
-                bucket, mirror);
+            if (e.pos.dark[sq]) {
+                if (e.pos.dark_owner[sq] != jieqi::WHITE
+                    && e.pos.dark_owner[sq] != jieqi::BLACK)
+                    throw std::runtime_error("V11 dark-square owner is invalid");
+                const int plane = e.pos.dark_owner[sq] == color ? 13 : 14;
+                features[j] = PS_NB * bucket + plane * NUM_SQ
+                            + map_square(color, sq, mirror);
+            } else
+                features[j] = make_index(color, sq, e.pos.board[sq], bucket, mirror);
             ++j;
         }
 
@@ -1391,40 +1415,40 @@ struct HalfKAv2HmJieqiV8 : HalfKAv2HmJieqiV3 {
             }
         }
 
-        append_meta_features_v8(e.pos, bucket, color, j, features, values);
+        append_meta_features_v11(e.pos, bucket, color, j, features, values);
         return {j, INPUTS};
     }
 };
 
-struct HalfKAv2HmJieqiV8Factorized {
-    static constexpr int PSQ_FACTOR_INPUTS = HalfKAv2HmJieqiV8::PS_NB;
+struct HalfKAv2HmJieqiV11Factorized {
+    static constexpr int PSQ_FACTOR_INPUTS = HalfKAv2HmJieqiV11::PS_NB;
     static constexpr int BUCKET_FACTOR_INPUTS = 24;
     static constexpr int VIRTUAL_INPUTS = PSQ_FACTOR_INPUTS + BUCKET_FACTOR_INPUTS;
-    static constexpr int INPUTS = HalfKAv2HmJieqiV8::INPUTS + VIRTUAL_INPUTS;
+    static constexpr int INPUTS = HalfKAv2HmJieqiV11::INPUTS + VIRTUAL_INPUTS;
     // Each real row contributes its PSQ and bucket factors.
-    static constexpr int MAX_ACTIVE_FEATURES = HalfKAv2HmJieqiV8::MAX_ACTIVE_FEATURES * 3;
+    static constexpr int MAX_ACTIVE_FEATURES = HalfKAv2HmJieqiV11::MAX_ACTIVE_FEATURES * 3;
 
-    static constexpr int PSQ_FACTOR_BASE = HalfKAv2HmJieqiV8::INPUTS;
+    static constexpr int PSQ_FACTOR_BASE = HalfKAv2HmJieqiV11::INPUTS;
     static constexpr int BUCKET_FACTOR_BASE = PSQ_FACTOR_BASE + PSQ_FACTOR_INPUTS;
 
     static int layer_stack_bucket(const jieqi::Position& pos) {
-        return HalfKAv2HmJieqiV8::layer_stack_bucket(pos);
+        return HalfKAv2HmJieqiV11::layer_stack_bucket(pos);
     }
 
-    static HalfKAv2HmJieqiV8::LayerStackSelection layer_stack_selection(const jieqi::Position& pos) {
-        return HalfKAv2HmJieqiV8::layer_stack_selection(pos);
+    static HalfKAv2HmJieqiV11::LayerStackSelection layer_stack_selection(const jieqi::Position& pos) {
+        return HalfKAv2HmJieqiV11::layer_stack_selection(pos);
     }
 
     static void append_virtual(int realFeature, int& j, int* features, float* values) {
         values[j] = 1.0f;
-        features[j++] = PSQ_FACTOR_BASE + (realFeature % HalfKAv2HmJieqiV8::PS_NB);
+        features[j++] = PSQ_FACTOR_BASE + (realFeature % HalfKAv2HmJieqiV11::PS_NB);
         values[j] = 1.0f;
-        features[j++] = BUCKET_FACTOR_BASE + (realFeature / HalfKAv2HmJieqiV8::PS_NB);
+        features[j++] = BUCKET_FACTOR_BASE + (realFeature / HalfKAv2HmJieqiV11::PS_NB);
     }
 
     static std::pair<int, int> fill_features_sparse(
       const jieqi::TrainingDataEntry& e, int* features, float* values, jieqi::Color color) {
-        auto [realCount, _] = HalfKAv2HmJieqiV8::fill_features_sparse(e, features, values, color);
+        auto [realCount, _] = HalfKAv2HmJieqiV11::fill_features_sparse(e, features, values, color);
         int j = realCount;
         // Append after the real rows; the sparse CUDA kernel only requires a
         // contiguous list and does not require sorting.
@@ -1435,15 +1459,15 @@ struct HalfKAv2HmJieqiV8Factorized {
 };
 
 template <typename Feature>
-struct V81RawFeaturePolicy : std::false_type {};
+struct V11RawFeaturePolicy : std::false_type {};
 
 template <>
-struct V81RawFeaturePolicy<HalfKAv2HmJieqiV8> : std::true_type {};
+struct V11RawFeaturePolicy<HalfKAv2HmJieqiV11> : std::true_type {};
 
 template <>
-struct V81RawFeaturePolicy<HalfKAv2HmJieqiV8Factorized> : std::true_type {};
+struct V11RawFeaturePolicy<HalfKAv2HmJieqiV11Factorized> : std::true_type {};
 
-static void normalize_v81_raw_unknown_loss(jieqi::Position& position) {
+static void normalize_v11_raw_unknown_loss(jieqi::Position& position) {
     int darkByColor[2] = {0, 0};
     for (int sq = 0; sq < jieqi::SQUARE_NB; ++sq) {
         if (!position.dark[sq])
@@ -1451,7 +1475,7 @@ static void normalize_v81_raw_unknown_loss(jieqi::Position& position) {
         const auto piece = position.board[sq];
         if (piece == jieqi::NO_PIECE || piece == jieqi::DARK_PIECE)
             throw std::runtime_error(
-                "V8 raw FEN cannot validate an uncoloured dark piece");
+                "V11 raw FEN cannot validate an uncoloured dark piece");
         ++darkByColor[jieqi::color_of(piece)];
     }
     for (const auto color : {jieqi::WHITE, jieqi::BLACK}) {
@@ -1461,11 +1485,11 @@ static void normalize_v81_raw_unknown_loss(jieqi::Position& position) {
         const int expectedUnknownLoss = restCount - darkByColor[color];
         if (expectedUnknownLoss < 0 || expectedUnknownLoss > 15)
             throw std::runtime_error(
-                "V8 raw FEN unknown_loss is outside the observation domain");
+                "V11 raw FEN unknown_loss is outside the observation domain");
         if (position.unknown_loss_explicit
             && position.unknown_loss[color] != expectedUnknownLoss)
             throw std::runtime_error(
-                "V8 raw FEN unknown_loss does not match rest/dark inventory");
+                "V11 raw FEN unknown_loss does not match rest/dark inventory");
         position.unknown_loss[color] = expectedUnknownLoss;
     }
 }
@@ -1944,12 +1968,11 @@ struct SparseBatch
     int* black = nullptr;
     float* white_values = nullptr;
     float* black_values = nullptr;
-    int* psqt_indices = nullptr;
     int* layer_stack_indices = nullptr;
-    // Optional tail field.  V3 batches leave this null; JQv4 V8 batches
+    // Optional tail field.  V3 batches leave this null; JQv4 V11 batches
     // provide one nonnegative weight per row for exact CP labels.
     float* eval_weight = nullptr;
-    // Append-only tail: Q0.8 selection represented as blend_q8 / 255.
+    // V11 append-only tail: Q0.8 selection represented as blend_q8 / 255.
     float* layer_stack_blend = nullptr;
 
     std::unique_ptr<float[]> is_white_storage;
@@ -1959,7 +1982,6 @@ struct SparseBatch
     std::unique_ptr<int[]> black_storage;
     std::unique_ptr<float[]> white_values_storage;
     std::unique_ptr<float[]> black_values_storage;
-    std::unique_ptr<int[]> psqt_indices_storage;
     std::unique_ptr<int[]> layer_stack_indices_storage;
     std::unique_ptr<float[]> eval_weight_storage;
     std::unique_ptr<float[]> layer_stack_blend_storage;
@@ -1999,7 +2021,6 @@ private:
         black_storage = std::make_unique<int[]>(feature_count);
         white_values_storage = std::make_unique<float[]>(feature_count);
         black_values_storage = std::make_unique<float[]>(feature_count);
-        psqt_indices_storage = std::make_unique<int[]>(entry_count);
         layer_stack_indices_storage = std::make_unique<int[]>(entry_count);
         if (with_eval_weight)
             eval_weight_storage = std::make_unique<float[]>(entry_count);
@@ -2013,7 +2034,6 @@ private:
         black = black_storage.get();
         white_values = white_values_storage.get();
         black_values = black_values_storage.get();
-        psqt_indices = psqt_indices_storage.get();
         layer_stack_indices = layer_stack_indices_storage.get();
         eval_weight = eval_weight_storage.get();
         layer_stack_blend = layer_stack_blend_storage.get();
@@ -2033,8 +2053,7 @@ private:
         is_white[i] = static_cast<float>(e.pos.sideToMove() == Color::White);
         outcome[i] = (e.result + 1.0f) / 2.0f;
         score[i] = e.score;
-        psqt_indices[i] = (e.pos.pieceCount() - 1) * 8 / MAX_PIECES;
-        layer_stack_indices[i] = psqt_indices[i];
+        layer_stack_indices[i] = (e.pos.pieceCount() - 1) * 8 / MAX_PIECES;
         fill_features(FeatureSet<Ts...>{}, i, e);
     }
 
@@ -2065,8 +2084,7 @@ private:
         is_white[i] = static_cast<float>(e.pos.side == jieqi::WHITE);
         outcome[i] = (e.result + 1.0f) / 2.0f;
         score[i] = e.score;
-        psqt_indices[i] = JieqiFeature::layer_stack_bucket(e.pos);
-        layer_stack_indices[i] = psqt_indices[i];
+        layer_stack_indices[i] = JieqiFeature::layer_stack_bucket(e.pos);
         if (eval_weight != nullptr)
             eval_weight[i] = eval_weight_value;
         if (layer_stack_blend != nullptr)
@@ -2174,8 +2192,8 @@ struct JieqiSparseBatchStream : Stream<SparseBatch>
                     "unexpected end of Jieqi v3 record data");
             ++m_next_record;
             auto entry = jieqi::from_record(record);
-            if constexpr (V81RawFeaturePolicy<JieqiFeature>::value) {
-                normalize_v81_raw_unknown_loss(entry.pos);
+            if constexpr (V11RawFeaturePolicy<JieqiFeature>::value) {
+                normalize_v11_raw_unknown_loss(entry.pos);
             }
             entries.push_back(std::move(entry));
         }
@@ -2478,7 +2496,7 @@ Jqv4Manifest parse_jqv4_manifest(const std::filesystem::path& manifest_path)
     if (root.kind != JsonKind::Object)
         throw std::runtime_error("JQv4 manifest root must be an object");
     if (json_string(root, "schema", "JQv4 manifest")
-        != "abjchess-v8-jqv4-manifest-v1")
+        != "abjchess-v11-jqv4-manifest-v1")
         throw std::runtime_error("unsupported JQv4 manifest schema");
 
     Jqv4Manifest result;
@@ -2600,7 +2618,7 @@ Jqv4Manifest parse_jqv4_manifest(const std::filesystem::path& manifest_path)
     // The native shuffle fingerprint intentionally consumes manifest order.
     // Bind that order to the same canonical identity tuple as the Python
     // provenance checker so a direct DLL caller cannot silently reshuffle a
-    // corpus while retaining a teacher digest.
+    // corpus while retaining its teacher digest.
     for (std::size_t i = 1U; i < result.files.size(); ++i) {
         const auto& previous = result.files[i - 1U];
         const auto& current = result.files[i];
@@ -2648,7 +2666,7 @@ std::uint64_t jqv4_shuffle_fingerprint(
     const std::vector<Jqv4ManifestFile>& files)
 {
     jqv4::DomainHash64 hash(
-        "abjchess-v8-jqv4-shuffle-fingerprint-v1");
+        "abjchess-v11-jqv4-shuffle-fingerprint-v1");
     const auto add = [&hash](jqv4::ByteView bytes, const char* field) {
         const auto status = hash.add_bytes(bytes);
         if (!status.ok())
@@ -2695,6 +2713,8 @@ jieqi::TrainingDataEntry jqv4_to_training_entry(
     std::fill(std::begin(result.pos.board), std::end(result.pos.board),
               jieqi::NO_PIECE);
     std::fill(std::begin(result.pos.dark), std::end(result.pos.dark), false);
+    std::fill(std::begin(result.pos.dark_owner), std::end(result.pos.dark_owner),
+              jieqi::WHITE);
     std::fill(std::begin(result.pos.rest), std::end(result.pos.rest), 0);
     std::fill(std::begin(result.pos.unknown_loss),
               std::end(result.pos.unknown_loss), 0);
@@ -2704,6 +2724,8 @@ jieqi::TrainingDataEntry jqv4_to_training_entry(
             continue;
         result.pos.board[sq] = jqv4_piece(code);
         result.pos.dark[sq] = code == 14U || code == 15U;
+        if (code == 14U) result.pos.dark_owner[sq] = jieqi::WHITE;
+        else if (code == 15U) result.pos.dark_owner[sq] = jieqi::BLACK;
     }
     for (int color = 0; color < 2; ++color)
         for (int type = 1; type <= 6; ++type)
@@ -2712,7 +2734,7 @@ jieqi::TrainingDataEntry jqv4_to_training_entry(
                 observation.rest[color][type - 1];
     result.pos.unknown_loss[jieqi::WHITE] = observation.unknown_loss[0];
     result.pos.unknown_loss[jieqi::BLACK] = observation.unknown_loss[1];
-    // V8 keeps unknown captured identities explicit.  The observation's
+    // V11 keeps unknown captured identities explicit.  The observation's
     // colored dark markers are the only source for the dark cover count; do
     // not infer either side from total dark density.
     int darkByColor[2] = {0, 0};
@@ -2724,13 +2746,13 @@ jieqi::TrainingDataEntry jqv4_to_training_entry(
         if (result.pos.unknown_loss[color] < 0
             || result.pos.unknown_loss[color] > 15)
             throw std::runtime_error(
-                "JQv4 V8 unknown_loss is outside the observation domain");
+                "JQv4 V11 unknown_loss is outside the observation domain");
         int restCount = 0;
         for (int type = 1; type <= 6; ++type)
             restCount += result.pos.rest[jieqi::make_piece(
                 static_cast<jieqi::Color>(color), type)];
         if (restCount != darkByColor[color] + result.pos.unknown_loss[color])
-            throw std::runtime_error("JQv4 V8 unknown_loss does not match rest/dark inventory");
+            throw std::runtime_error("JQv4 V11 unknown_loss does not match rest/dark inventory");
     }
     result.pos.side = observation.side_to_move == 0U
         ? jieqi::WHITE : jieqi::BLACK;
@@ -2740,8 +2762,8 @@ jieqi::TrainingDataEntry jqv4_to_training_entry(
     result.score = record.core.root_value;
     result.ply = record.core.game_ply;
 
-    // Synthetic results are already encoded from the side-to-move
-    // perspective.  Native game metadata stores the winner as white/black.
+    // Synthetic results are already encoded from the side-to-move perspective.
+    // Native game metadata stores the winner as white/black.
     if (record.legacy_result.has_value()) {
         result.result = *record.legacy_result;
     } else {
@@ -2891,7 +2913,7 @@ private:
             const auto record_seed = jqv4::hash_block_seed_v1(
                 m_cycle_seed, file.file_uuid, block_id);
             m_record_order =
-                abjchess::v8_training::permuted_ordinals_v1(
+                abjchess::v11_training::permuted_ordinals_v1(
                     m_block->records.size(), record_seed);
             m_record_index = 0U;
             if (!m_block->records.empty())
@@ -2904,7 +2926,7 @@ private:
         m_cycle_seed = jqv4::hash_cycle_seed_v1(
             m_shuffle_fingerprint, m_manifest.shuffle_seed,
             m_coverage_cycle, 1U);
-        m_file_order = abjchess::v8_training::permuted_ordinals_v1(
+        m_file_order = abjchess::v11_training::permuted_ordinals_v1(
             m_manifest.files.size(), m_cycle_seed);
         m_file_order_index = 0U;
         m_file_reader.reset();
@@ -3030,7 +3052,7 @@ private:
     std::vector<std::uint64_t> m_file_order;
     std::size_t m_file_order_index = 0U;
     std::uint64_t m_current_file_ordinal = 0U;
-    std::optional<abjchess::v8_training::BoundedOrdinalShuffleV1>
+    std::optional<abjchess::v11_training::BoundedOrdinalShuffleV1>
         m_block_shuffle;
     std::vector<std::uint64_t> m_record_order;
     std::size_t m_record_index = 0U;
@@ -3236,50 +3258,19 @@ static Stream<SparseBatch>* create_sparse_batch_stream_impl(
     const std::filesystem::path input_path(filename);
     const auto extension = input_path.extension().string();
     const bool jqv4_manifest = extension == ".json"
-        || extension == ".jqv8.json";
-    if (feature_set == "HalfKAv2_hm_jieqi_v8" && jqv4_manifest)
-        return new Jqv4SparseBatchStream<HalfKAv2HmJieqiV8>(
+        || extension == ".jqv11.json";
+    if (feature_set == "HalfKAv2_hm_jieqi_v11" && jqv4_manifest)
+        return new Jqv4SparseBatchStream<HalfKAv2HmJieqiV11>(
             filename, batch_size, cyclic, rank, world_size);
-    if (feature_set == "HalfKAv2_hm_jieqi_v8")
-        return new JieqiSparseBatchStream<HalfKAv2HmJieqiV8>(
+    if (feature_set == "HalfKAv2_hm_jieqi_v11")
+        return new JieqiSparseBatchStream<HalfKAv2HmJieqiV11>(
             filename, batch_size, cyclic, rank, world_size);
-    if (feature_set == "HalfKAv2_hm_jieqi_v8^" && jqv4_manifest)
-        return new Jqv4SparseBatchStream<HalfKAv2HmJieqiV8Factorized>(
+    if (feature_set == "HalfKAv2_hm_jieqi_v11^" && jqv4_manifest)
+        return new Jqv4SparseBatchStream<HalfKAv2HmJieqiV11Factorized>(
             filename, batch_size, cyclic, rank, world_size);
-    if (feature_set == "HalfKAv2_hm_jieqi_v8^")
-        return new JieqiSparseBatchStream<HalfKAv2HmJieqiV8Factorized>(
+    if (feature_set == "HalfKAv2_hm_jieqi_v11^")
+        return new JieqiSparseBatchStream<HalfKAv2HmJieqiV11Factorized>(
             filename, batch_size, cyclic, rank, world_size);
-    if (feature_set == "HalfKAv2_hm_jieqi_v3_fullthreats")
-        return new JieqiSparseBatchStream<HalfKAv2HmJieqiV3FullThreats>(
-            filename, batch_size, cyclic, rank, world_size);
-    if (feature_set == "HalfKAv2_hm_jieqi_v3_fullthreats^")
-        return new JieqiSparseBatchStream<
-            HalfKAv2HmJieqiV3FullThreatsFactorized>(
-                filename, batch_size, cyclic, rank, world_size);
-
-    if (rank != 0 || world_size != 1)
-        throw std::runtime_error(
-            "rank sharding is supported only for Jieqi v3 FullThreats");
-
-    auto skipPredicate = make_skip_predicate(filtered, random_fen_skipping);
-    if (feature_set == "HalfKP")
-        return new FeaturedBatchStream<FeatureSet<HalfKP>, SparseBatch>(
-            concurrency, filename, batch_size, cyclic, skipPredicate);
-    if (feature_set == "HalfKP^")
-        return new FeaturedBatchStream<FeatureSet<HalfKPFactorized>, SparseBatch>(
-            concurrency, filename, batch_size, cyclic, skipPredicate);
-    if (feature_set == "HalfKA")
-        return new FeaturedBatchStream<FeatureSet<HalfKA>, SparseBatch>(
-            concurrency, filename, batch_size, cyclic, skipPredicate);
-    if (feature_set == "HalfKA^")
-        return new FeaturedBatchStream<FeatureSet<HalfKAFactorized>, SparseBatch>(
-            concurrency, filename, batch_size, cyclic, skipPredicate);
-    if (feature_set == "HalfKAv2")
-        return new FeaturedBatchStream<FeatureSet<HalfKAv2>, SparseBatch>(
-            concurrency, filename, batch_size, cyclic, skipPredicate);
-    if (feature_set == "HalfKAv2^")
-        return new FeaturedBatchStream<FeatureSet<HalfKAv2Factorized>, SparseBatch>(
-            concurrency, filename, batch_size, cyclic, skipPredicate);
 
     throw std::runtime_error(
         std::string("unknown feature set: ") + feature_set_c);
@@ -3317,6 +3308,7 @@ static Stream<SparseBatch>* create_sparse_batch_stream_checked(
 }
 
 extern "C" {
+    EXPORT int CDECL training_data_loader_abi_version() { return 110; }
 
     EXPORT Stream<SparseBatch>* CDECL create_sparse_batch_stream(
         const char* feature_set_c,
