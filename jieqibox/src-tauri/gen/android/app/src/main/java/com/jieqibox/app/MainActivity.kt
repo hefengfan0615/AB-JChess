@@ -74,11 +74,11 @@ class MainActivity : TauriActivity() {
             if (!targetDir.exists()) {
                 targetDir.mkdirs()
             }
-            val target = File(targetDir, "abjchess-20260911.nnue")
+            val target = File(targetDir, "abjchess-20261004.nnue")
             if (target.exists() && target.length() > 0) {
                 return
             }
-            assets.open("nnue/abjchess-20260911.nnue").use { input ->
+            assets.open("nnue/abjchess-20261004.nnue").use { input ->
                 FileOutputStream(target).use { output ->
                     input.copyTo(output, bufferSize = 1 shl 16)
                     output.flush()
