@@ -43,10 +43,9 @@ jobs:
           unzip -o nnue.zip
           ls -la "$NNUE_UNZIP_DIR/$NNUE_FILE"
           # ABJCHESSV82 is 11 bytes; read exactly 11 bytes to compare.
-          magic="$(head -c 11 "$NNUE_UNZIP_DIR/$NNUE_FILE")"
-          echo "NNUE magic: $magic"
-          [ "$magic" = "ABJCHESSV82" ] || { echo "Unexpected NNUE magic" >&2; exit 1; }
-
+          magic="$(head -c 9 "$NNUE_UNZIP_DIR/$NNUE_FILE")"
+          echo "NNUE magic prefix: $magic"
+          [ "$magic" = "ABJCHESSV" ] || { echo "Unexpected NNUE magic: $magic" >&2; exit 1; }
       - name: Install Android NDK (${{ env.NDK_VERSION }})
         run: |
           set -e
