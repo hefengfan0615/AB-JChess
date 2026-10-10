@@ -2,13 +2,26 @@
 # and its NNUE network bundled inside, so end users install one APK and the
 # engine loads automatically (no manual engine selection/download).
 #
+# Trigger: MANUAL ONLY (workflow_dispatch). Pass the NNUE download URL via the
+# `nnue_url` input. Format:
+#   <zip_url>/<inner_path>/<name>.nnue
+# Everything after ".zip/" is the path of the .nnue file inside the zip, e.g.
+#   https://github.com/lxsgx23/AB-JChess/releases/download/v0.2d/0.2d_bmi2.zip/0.2d_bmi2/abjchess-20261010.nnue
+# The workflow parses the URL, downloads/extracts the NNUE, rewrites the two
+# hardcoded NNUE names (lib.rs BUNDLED_NNUE_NAME + MainActivity.kt) so the new
+# file is actually loaded by the app, then builds and publishes the APK.
+#
 # Output:  app-universal-release-no-yolo.apk  ->  GitHub Release "丰帆揭棋"
 name: build-jieqibox-apk-bundled
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      nnue_url:
+        description: "NNUE URL: <...>.zip/<path-inside-zip>/<name>.nnue"
+        required: true
+        default: "https://github.com/lxsgx23/AB-JChess/releases/download/v0.2d/0.2d_bmi2.zip/0.2d_bmi2/abjchess-20261010.nnue"
+        type: string
 
 concurrency:
   group: jieqibox-apk-${{ github.ref }}
@@ -18,10 +31,6 @@ env:
   NDK_VERSION: r27c
   NDK_DIR: android-ndk-r27c
   NDK_BIN: /usr/local/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin
-  NNUE_URL: https://github.com/lxsgx23/AB-JChess/releases/download/v0.2c/0.2c_bmi2.zip
-  NNUE_FILE: abjchess-20261004.nnue
-  # Directory inside the downloaded zip that contains the .nnue file.
-  NNUE_UNZIP_DIR: 0.2c_bmi2
   BUNDLED_ENGINE_DIR: jieqibox/src-tauri/engine-assets
   BUNDLED_ENGINE_NAME: AB-JChess
   RELEASE_TAG: v0.7.2-fengfan
@@ -36,17 +45,56 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve NNUE URL (zip + inner path + filename)
+        run: |
+          set -e
+          URL="${{ inputs.nnue_url }}"
+          case "$URL" in
+            *.zip/*) ;;
+            *) echo "nnue_url must look like <...>.zip/<inner-path>/<name>.nnue, got: $URL" >&2; exit 1 ;;
+          esac
+          NNUE_ZIP_URL="${URL%%.zip*}.zip"
+          NNUE_INNER_PATH="${URL#*.zip/}"
+          NNUE_FILE="${NNUE_INNER_PATH##*/}"
+          case "$NNUE_FILE" in
+            *.nnue) ;;
+            *) echo "Inner path must end with a .nnue file, got: $NNUE_INNER_PATH" >&2; exit 1 ;;
+          esac
+          echo "NNUE zip      : $NNUE_ZIP_URL"
+          echo "Inner path    : $NNUE_INNER_PATH"
+          echo "NNUE filename : $NNUE_FILE"
+          echo "NNUE_ZIP_URL=$NNUE_ZIP_URL"       >> "$GITHUB_ENV"
+          echo "NNUE_INNER_PATH=$NNUE_INNER_PATH" >> "$GITHUB_ENV"
+          echo "NNUE_FILE=$NNUE_FILE"             >> "$GITHUB_ENV"
+
       - name: Download NNUE weights
         run: |
           set -e
-          curl -fL --retry 3 --retry-delay 5 -o nnue.zip "$NNUE_URL"
+          curl -fL --retry 3 --retry-delay 5 -o nnue.zip "$NNUE_ZIP_URL"
           unzip -o nnue.zip
-          ls -la "$NNUE_UNZIP_DIR/$NNUE_FILE"
+          ls -la "$NNUE_INNER_PATH"
           # Only check the "ABJCHESSV" prefix; the trailing version digits can
           # change between releases (V11, V82, ...) without breaking CI.
-          magic="$(head -c 9 "$NNUE_UNZIP_DIR/$NNUE_FILE")"
+          magic="$(head -c 9 "$NNUE_INNER_PATH")"
           echo "NNUE magic prefix: $magic"
           [ "$magic" = "ABJCHESSV" ] || { echo "Unexpected NNUE magic: $magic" >&2; exit 1; }
+
+      - name: Point the two bundled-NNUE references at the new file
+        run: |
+          set -e
+          # 1) lib.rs: BUNDLED_NNUE_NAME, awaited at engine startup.
+          sed -i "s|const BUNDLED_NNUE_NAME: &str = \"[^\"]*\";|const BUNDLED_NNUE_NAME: \\&str = \"${NNUE_FILE}\";|" \
+            jieqibox/src-tauri/src/lib.rs
+          # 2) MainActivity.kt: asset path (nnue/<file>) + target file name.
+          sed -i -E "s|[A-Za-z0-9._-]+\.nnue|${NNUE_FILE}|g" \
+            jieqibox/src-tauri/gen/android/app/src/main/java/com/jieqibox/app/MainActivity.kt
+          echo "--- lib.rs ---"
+          grep -n "BUNDLED_NNUE_NAME" jieqibox/src-tauri/src/lib.rs
+          echo "--- MainActivity.kt ---"
+          grep -n "$NNUE_FILE" jieqibox/src-tauri/gen/android/app/src/main/java/com/jieqibox/app/MainActivity.kt
+          grep -q "const BUNDLED_NNUE_NAME: &str = \"${NNUE_FILE}\";" jieqibox/src-tauri/src/lib.rs
+          grep -q "assets.open(\"nnue/${NNUE_FILE}\")" \
+            jieqibox/src-tauri/gen/android/app/src/main/java/com/jieqibox/app/MainActivity.kt
 
       - name: Install Android NDK (${{ env.NDK_VERSION }})
         run: |
@@ -81,7 +129,7 @@ jobs:
           # MainActivity copies it into the bundled engine dir at launch.
           ANDROID_ASSETS="jieqibox/src-tauri/gen/android/app/src/main/assets"
           mkdir -p "$ANDROID_ASSETS/nnue"
-          cp "$NNUE_UNZIP_DIR/$NNUE_FILE" "$ANDROID_ASSETS/nnue/$NNUE_FILE"
+          cp "$NNUE_INNER_PATH" "$ANDROID_ASSETS/nnue/$NNUE_FILE"
 
           ls -la "$BUNDLED_ENGINE_DIR" "$ANDROID_ASSETS/nnue"
           test -s "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
