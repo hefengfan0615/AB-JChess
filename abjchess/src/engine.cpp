@@ -185,22 +185,9 @@ Engine::Engine(std::optional<std::string> path) :
         return std::nullopt;
     };
 
-    options.add("RevealBonusBase", Option(0, -256, 256, clearSearch));
-    options.add("RevealBonusPhase", Option(0, -256, 256, clearSearch));
-    options.add("RevealBonusPool", Option(0, -256, 256, clearSearch));
-    options.add("RevealBonusUnknown", Option(0, -256, 256, clearSearch));
-    options.add("RevealBonusComeback", Option(0, -256, 256, clearSearch));
-    options.add("RevealMoveOrder", Option(0, -16384, 16384, clearSearch));
-    options.add("RevealReduction", Option(0, -2180, 2180, clearSearch));
-    options.add("RevealPruningMargin", Option(0, -512, 512, clearSearch));
     options.add("RevealQuietBase", Option(-12, -96, 96, clearSearch));
-    options.add("RevealQuietPhase", Option(0, -96, 96, clearSearch));
     options.add("RevealQuietSafety", Option(24, -192, 192, clearSearch));
     options.add("RevealQuietHighValue", Option(-12, -96, 96, clearSearch));
-    options.add("RevealQuietDiversity", Option(0, -96, 96, clearSearch));
-    options.add("RevealQuietComeback", Option(0, -96, 96, clearSearch));
-    options.add("RevealQuietMoveOrder", Option(0, -2048, 2048, clearSearch));
-    options.add("RevealQuietReduction", Option(0, -545, 545, clearSearch));
 #endif
 
     options.add("nodestime", Option(0, 0, 10000));

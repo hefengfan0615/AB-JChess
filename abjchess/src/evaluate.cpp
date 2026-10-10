@@ -82,7 +82,8 @@ Value runtime_value(const ::ABJNNUE::RawEvaluation& raw, const Position& pos, in
     return ::ABJNNUE::Inference::evaluate_accumulated(networks.big.model(), pos, view.accumulated,
                                                       ::ABJNNUE::LayerStackSelection{
                                                         view.layerStackBucket,
-                                                        view.layerStackBlendQ8});
+                                                        view.layerStackBlendQ8},
+                                                      view.inventoryContext);
 }
 
 }  // namespace
@@ -95,14 +96,6 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
                      Eval::NNUE::AccumulatorCaches& caches,
                      int                            optimism) {
     assert(!pos.checkers());
-    return runtime_value(runtime_raw(networks, pos, accumulators, caches), pos, optimism);
-}
-
-Value Eval::evaluate_for_reveal(const Eval::NNUE::Networks&    networks,
-                                const Position&                pos,
-                                Eval::NNUE::AccumulatorStack&  accumulators,
-                                Eval::NNUE::AccumulatorCaches& caches,
-                                int                            optimism) {
     return runtime_value(runtime_raw(networks, pos, accumulators, caches), pos, optimism);
 }
 

@@ -32,7 +32,7 @@ namespace Eval {
 
 namespace NNUE {
 // Default V11 network (export a trained V11 checkpoint before use).
-constexpr const char* EvalFileDefaultNameBig = "abjchess-20261004.nnue";
+constexpr const char* EvalFileDefaultNameBig = "abjchess-20261010.nnue";
 struct Networks;
 struct AccumulatorCaches;
 using AccumulatorStack = ::ABJNNUE::AccumulatorStack;
@@ -46,13 +46,6 @@ Value evaluate(const NNUE::Networks&          networks,
                Eval::NNUE::AccumulatorCaches& caches,
                int                            optimism);
 
-// Reveal comeback is the sole caller allowed to request a raw static value
-// while the side to move is in check.
-Value evaluate_for_reveal(const NNUE::Networks&          networks,
-                          const Position&                pos,
-                          Eval::NNUE::AccumulatorStack&  accumulators,
-                          Eval::NNUE::AccumulatorCaches& caches,
-                          int                            optimism);
 }  // namespace Eval
 
 }  // namespace Stockfish

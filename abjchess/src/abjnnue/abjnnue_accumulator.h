@@ -67,6 +67,7 @@ class AccumulatorStack {
         std::uint32_t              layerStackBucket;
         std::uint8_t               layerStackBlendQ8;
         std::size_t                darkSquares;
+        InventoryContext           inventoryContext;
     };
 
     AccumulatorStack();
@@ -92,6 +93,7 @@ class AccumulatorStack {
         std::array<bool, Stockfish::COLOR_NB> midMirrors{};
         std::array<std::array<std::uint8_t, RestTypes>, Stockfish::COLOR_NB> restCounts{};
         std::array<std::array<std::uint8_t, 9>, Stockfish::COLOR_NB> metaOffsets{};
+        InventoryDarkCounts darkCounts{};
         bool valid = false;
         bool dark_variant() const noexcept { return darkSquares != 0; }
     };

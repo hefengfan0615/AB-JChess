@@ -37,7 +37,7 @@ The FEN format is compatible with Pikafish's Jieqi branch, so positions generate
 
 ## NNUE Training
 
-The `abjchess-nnue-pytorch/` directory contains the complete training pipeline for the V8.2 NNUE network. It uses the `HalfKAv2_hm_jieqi_v8` feature set, specifically designed for Jieqi.
+The `abjchess-nnue-pytorch/` directory contains the complete training pipeline for the V11 NNUE network. It uses the `HalfKAv2_hm_jieqi_v11` feature set, specifically designed for Jieqi.
 
 ### Training Workflow
 
@@ -54,7 +54,7 @@ The `abjchess-nnue-pytorch/` directory contains the complete training pipeline f
 
 3. **Train the network**:
    ```bash
-   python train_v11.py --features HalfKAv2_hm_jieqi_v8 --gpus 1
+   python train_v11.py --features HalfKAv2_hm_jieqi_v11 --gpus 1
    ```
 
 4. **Export a runtime package**:

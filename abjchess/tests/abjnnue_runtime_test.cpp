@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstdlib>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -23,6 +24,7 @@
 #include "abjnnue/abjnnue_model.h"
 #include "bitboard.h"
 #include "engine.h"
+#include "movegen.h"
 #include "position.h"
 #include "search.h"
 #include "types.h"
@@ -401,9 +403,25 @@ void compare_stack_with_full(const ABJNNUE::Model& model,
             label + ": layer-stack floor differs");
     require(view.layerStackBlendQ8 == full.encoded.layerStackSelection.blendQ8,
             label + ": layer-stack blend differs");
+    require(view.layerStackBucket == ABJNNUE::FeatureEncoder::layer_stack_bucket(position),
+            label + ": optimized layer-stack floor differs from the reference");
+    require(view.inventoryContext
+              == ABJNNUE::FeatureEncoder::inventory_context(position, position.side_to_move()),
+            label + ": cached inventory context differs from the position encoder");
+    const auto attackBuckets = ABJNNUE::FeatureEncoder::attack_buckets(position);
+    const auto midMirrors = ABJNNUE::FeatureEncoder::requires_mid_mirrors(position);
+    for (Color color : {WHITE, BLACK})
+    {
+        require(attackBuckets[color] == ABJNNUE::FeatureEncoder::attack_bucket(position, color),
+                label + ": paired attack bucket differs from the reference");
+        require(midMirrors[color]
+                  == ABJNNUE::FeatureEncoder::requires_mid_mirror(position, color),
+                label + ": paired mid-mirror result differs from the reference");
+    }
     const auto incremental = ABJNNUE::Inference::evaluate_accumulated(
       model, position, view.accumulated,
-      ABJNNUE::LayerStackSelection{view.layerStackBucket, view.layerStackBlendQ8});
+      ABJNNUE::LayerStackSelection{view.layerStackBucket, view.layerStackBlendQ8},
+      view.inventoryContext);
     require(incremental.positionalRaw == full.positionalRaw,
             label + ": positional inference differs");
 }
@@ -630,10 +648,11 @@ void test_refresh_cache_hidden_and_fallback(const ABJNNUE::Model& model) {
         position.undo_flip(SQ_A4, hiddenPiece);
     }
 
-    // Keep the king transforms and dark variant unchanged while replacing more
-    // than the cache delta budget; this must take the full-refresh fallback.
+    // Keep the cache shape unchanged, but replace board rows AND inventory rows
+    // to exceed the V11 cache's 128-row budget. Board swaps alone are too small.
     constexpr auto ManyFeatureChangesFEN =
-      "nrbakabrn/9/2c3c2/p1p1p1p1p/9/9/P1P1P1P1P/2C3C2/9/NRBAKABRN w - 0 1";
+      "nrbakabrn/9/2c3c2/p1p1p1p1p/9/9/P1P1P1P1P/2C3C2/9/NRBAKABRN"
+      " w R2C2N2B2A2P5r2c2n2b2a2p5 0 1";
     std::deque<StateInfo> states(1);
     Position position;
     position.set(VisibleStartFEN, &states.back());
@@ -678,7 +697,10 @@ void test_heads(const ABJNNUE::Model& model, bool expectHeadSnapshot) {
 }
 
 void test_head_backend_equivalence(const ABJNNUE::Model& model) {
-#if defined(USE_AVX2)
+#if defined(USE_AVXVNNI)
+    require(std::string_view(ABJNNUE::Layers::backend_name()) == "avx-vnni",
+            "AVX-VNNI build did not select the AVX-VNNI head backend");
+#elif defined(USE_AVX2)
     require(std::string_view(ABJNNUE::Layers::backend_name()) == "avx2",
             "AVX2 build did not select the AVX2 head backend");
 #elif defined(USE_SSSE3)
@@ -800,6 +822,64 @@ void test_visible_incremental(const ABJNNUE::Model& model) {
     position.undo_move(move);
     stack->pop();
     compare_stack_with_full(model, position, *stack, "visible undo");
+}
+
+void test_replay_equivalence(const ABJNNUE::Model& model) {
+    constexpr auto HiddenStartFEN =
+      "xxxxkxxxx/9/1x5x1/x1x1x1x1x/9/9/X1X1X1X1X/1X5X1/9/XXXXKXXXX"
+      " w R2N2B2A2C2P5r2n2b2a2c2p5 0 1";
+    std::uint32_t random = 0x517cc1b7U;
+    const auto nextRandom = [&] { return random = random * 1664525U + 1013904223U; };
+    for (int game = 0; game < 8; ++game)
+    {
+        Position position;
+        std::deque<StateInfo> states(1);
+        position.set(game % 2 ? HiddenStartFEN : VisibleStartFEN, &states.back());
+        auto stack = std::make_unique<ABJNNUE::AccumulatorStack>();
+        auto cache = std::make_unique<ABJNNUE::RefreshCache>();
+        struct Played { Move move; Piece revealedFrom; };
+        std::vector<Played> played;
+        for (int ply = 0; ply < 48; ++ply)
+        {
+            // Leave intermediate entries unevaluated to exercise fused transitions.
+            if (ply % 3 == 0)
+            {
+                const auto view = stack->evaluate(model, position, *cache);
+                const auto full = ABJNNUE::Inference::evaluate(model, position);
+                compare_accumulated(view.accumulated, full.accumulated, "replay cache");
+                compare_stack_with_full(model, position, *stack, "replay");
+            }
+            const MoveList<LEGAL> moves(position);
+            if (moves.size() == 0) break;
+            const Move move = moves.begin()[nextRandom() % moves.size()];
+            const bool movingDark = position.move_dark(move);
+            const Color mover = position.side_to_move();
+            states.emplace_back();
+            auto dirty = position.do_move(move, states.back(), position.gives_check(move), nullptr);
+            Piece revealedFrom = NO_PIECE;
+            if (movingDark)
+            {
+                const auto candidates = position.rest_pieces(mover);
+                require(!candidates.empty(), "replay has no reveal candidates");
+                const Piece identity = candidates[nextRandom() % candidates.size()].first;
+                revealedFrom = position.do_flip(move.to_sq(), identity, &dirty, nullptr);
+            }
+            stack->push(dirty, position);
+            played.push_back({move, revealedFrom});
+        }
+        compare_stack_with_full(model, position, *stack, "replay leaf");
+        while (!played.empty())
+        {
+            const auto last = played.back();
+            played.pop_back();
+            if (last.revealedFrom != NO_PIECE)
+                position.undo_flip(last.move.to_sq(), last.revealedFrom);
+            position.undo_move(last.move);
+            stack->pop();
+            states.pop_back();
+            compare_stack_with_full(model, position, *stack, "replay undo");
+        }
+    }
 }
 
 void test_attack_and_midmirror_transitions(const ABJNNUE::Model& model) {
@@ -1091,15 +1171,20 @@ int main(int argc, char** argv) {
         const auto metadata = ABJNNUE::Package::load(std::filesystem::path(argv[1])).metadata_json();
         const bool smokeOnly = metadata.find("\"smoke_only\":true") != std::string::npos
                             || metadata.find("\"smoke_only\": true") != std::string::npos;
+        const char* snapshotOption = std::getenv("ABJNNUE_RUNTIME_SKIP_MODEL_SNAPSHOTS");
+        const bool skipModelSnapshots = snapshotOption && std::string_view(snapshotOption) == "1";
+        if (skipModelSnapshots)
+            std::cout << "Skipping reference-package score snapshots; running all equivalence tests\n";
 
-        test_heads(*model, !smokeOnly);
+        test_heads(*model, !smokeOnly && !skipModelSnapshots);
         test_head_backend_equivalence(*model);
-        test_probability(*model, !smokeOnly);
+        test_probability(*model, !smokeOnly && !skipModelSnapshots);
         test_runtime_optimization_contract(*model);
         test_pairwise_transform_boundaries(*model);
         test_interpolation_oracle(*model);
         test_refresh_cache_hidden_and_fallback(*model);
         test_visible_incremental(*model);
+        test_replay_equivalence(*model);
         test_attack_and_midmirror_transitions(*model);
         test_hidden_capture_reveal(*model);
         test_multi_hidden_capture_reveal(*model);

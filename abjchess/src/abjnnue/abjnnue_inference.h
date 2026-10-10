@@ -44,6 +44,12 @@ class Inference {
                                               const AccumulatedPosition& accumulated,
                                               LayerStackSelection selection,
                                               TransformedFeatures* transformed = nullptr);
+    static RawEvaluation evaluate_accumulated(const Model& model,
+                                              const Stockfish::Position& position,
+                                              const AccumulatedPosition& accumulated,
+                                              LayerStackSelection selection,
+                                              const InventoryContext& inventoryContext,
+                                              TransformedFeatures* transformed = nullptr);
 
     static const InferenceStats& stats() noexcept;
     static void reset_stats() noexcept;

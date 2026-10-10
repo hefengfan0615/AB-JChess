@@ -347,20 +347,10 @@ void AccumulatorStack::pop() {
 
 AccumulatorStack::Metadata AccumulatorStack::capture_metadata(const Position& position) {
     Metadata metadata;
-    metadata.layerStackBucket = FeatureEncoder::layer_stack_bucket(position);
-    metadata.blendQ8 = FeatureEncoder::layer_stack_selection(position).blendQ8;
+    const auto selection = FeatureEncoder::layer_stack_selection(position);
+    metadata.layerStackBucket = selection.floor;
+    metadata.blendQ8 = selection.blendQ8;
     metadata.darkSquares = FeatureEncoder::dark_square_count(position);
-    const auto restCount = [&](Color color) {
-        int total = 0;
-        for (PieceType type : RestOrder)
-            total += position.rest_piece(make_piece(color, type));
-        return total;
-    };
-    const auto strongCount = [&](Color color) {
-        return position.rest_piece(make_piece(color, ROOK))
-             + position.rest_piece(make_piece(color, CANNON))
-             + position.rest_piece(make_piece(color, KNIGHT));
-    };
     const auto density = [](std::size_t count) {
         if (count == 0) return 0;
         if (count <= 2) return 1;
@@ -371,63 +361,90 @@ AccumulatorStack::Metadata AccumulatorStack::capture_metadata(const Position& po
         if (count <= 24) return 6;
         return 7;
     };
-    const auto darkByColor = [&](Color color) {
-        int count = 0;
-        for (Square square = SQ_A0; square <= SQ_I9; ++square)
-            if (position.is_dark(square) && color_of(position.piece_on(square)) == color)
-                ++count;
-        return count;
-    };
-    const auto threatSummary = [&](Color color) {
-        std::array<int, 2> result{};
-        const Color enemy = ~color;
-        for (Square square = SQ_A0; square <= SQ_I9; ++square)
-        {
-            const Piece target = position.piece_on(square);
-            if (target == NO_PIECE || position.is_dark(square)) continue;
-            const auto attackers = position.attackers_to(square)
-                                 & position.pieces(color) & ~position.pieces(DARK);
-            const auto enemyAttackers = position.attackers_to(square)
-                                      & position.pieces(enemy) & ~position.pieces(DARK);
-            if (color_of(target) == enemy && attackers) ++result[0];
-            if (color_of(target) == color && enemyAttackers) ++result[1];
-        }
-        result[0] = std::clamp(result[0], 0, 7);
-        result[1] = std::clamp(result[1], 0, 7);
-        return result;
-    };
-    for (Color perspective : {WHITE, BLACK})
+    std::array<int, COLOR_NB> darkByColor{};
+    std::array<std::array<int, 2>, COLOR_NB> threats{};
+    std::array<bool, COLOR_NB> hasRook{};
+    std::array<bool, COLOR_NB> hasKnightOrCannon{};
+    std::array<int, COLOR_NB> restTotals{};
+    std::array<int, COLOR_NB> strongTotals{};
+    const auto dark = position.pieces(DARK);
+    for (Square square = SQ_A0; square <= SQ_I9; ++square)
     {
-        metadata.kingTransforms[perspective] = FeatureEncoder::king_transform(position, perspective);
-        metadata.attackBuckets[perspective] = static_cast<std::uint8_t>(
-          FeatureEncoder::attack_bucket(position, perspective));
-        metadata.midMirrors[perspective] = FeatureEncoder::requires_mid_mirror(position, perspective);
+        const Piece target = position.piece_on(square);
+        if (target == NO_PIECE) continue;
+        const Color owner = color_of(target);
+        if (position.is_dark(square))
+        {
+            ++darkByColor[owner];
+            continue;
+        }
+        switch (type_of(target))
+        {
+        case ROOK: hasRook[owner] = true; break;
+        case KNIGHT:
+        case CANNON: hasKnightOrCannon[owner] = true; break;
+        default: break;
+        }
+        const auto attackers = position.attackers_to(square);
+        const auto whiteAttackers = attackers & position.pieces(WHITE) & ~dark;
+        const auto blackAttackers = attackers & position.pieces(BLACK) & ~dark;
+        if (owner == WHITE)
+        {
+            if (blackAttackers)
+            {
+                ++threats[WHITE][1];
+                ++threats[BLACK][0];
+            }
+        }
+        else
+        {
+            if (whiteAttackers)
+            {
+                ++threats[BLACK][1];
+                ++threats[WHITE][0];
+            }
+        }
+    }
+    const auto midMirrors = FeatureEncoder::requires_mid_mirrors(position);
+    for (Color color : {WHITE, BLACK})
         for (std::size_t typeIndex = 0; typeIndex < std::size(RestOrder); ++typeIndex)
         {
-            const int count = position.rest_piece(make_piece(perspective, RestOrder[typeIndex]));
+            const int count = position.rest_piece(make_piece(color, RestOrder[typeIndex]));
             if (count < 0 || count > 16)
                 throw std::runtime_error("ABJNNUE V11 rest-piece count is outside its domain");
-            metadata.restCounts[perspective][typeIndex] = static_cast<std::uint8_t>(count);
+            metadata.restCounts[color][typeIndex] = static_cast<std::uint8_t>(count);
+            restTotals[color] += count;
+            if (typeIndex < 3) strongTotals[color] += count;
         }
+    for (Color perspective : {WHITE, BLACK})
+    {
+        metadata.midMirrors[perspective] = midMirrors[perspective];
+        metadata.kingTransforms[perspective] =
+          FeatureEncoder::king_transform(position, perspective, midMirrors[perspective]);
+        metadata.attackBuckets[perspective] = static_cast<std::uint8_t>(
+          (hasRook[perspective] ? 2 : 0) + (hasKnightOrCannon[perspective] ? 1 : 0));
         const Color enemy = ~perspective;
-        const auto threats = threatSummary(perspective);
-        const int unknownLoss = restCount(perspective) - darkByColor(perspective);
-        const int enemyUnknownLoss = restCount(enemy) - darkByColor(enemy);
+        threats[perspective][0] = std::clamp(threats[perspective][0], 0, 7);
+        threats[perspective][1] = std::clamp(threats[perspective][1], 0, 7);
+        const int unknownLoss = restTotals[perspective] - darkByColor[perspective];
+        const int enemyUnknownLoss = restTotals[enemy] - darkByColor[enemy];
         if (unknownLoss < 0 || unknownLoss > 15
             || enemyUnknownLoss < 0 || enemyUnknownLoss > 15)
             throw std::runtime_error(
               "ABJNNUE V11 unknown_loss is outside the observation domain");
         metadata.metaOffsets[perspective] = {
-          static_cast<std::uint8_t>(std::clamp(strongCount(perspective), 0, 7)),
-          static_cast<std::uint8_t>(8 + std::clamp(strongCount(enemy), 0, 7)),
-          static_cast<std::uint8_t>(16 + std::clamp(restCount(perspective), 0, 7)),
-          static_cast<std::uint8_t>(24 + std::clamp(restCount(enemy), 0, 7)),
+          static_cast<std::uint8_t>(std::clamp(strongTotals[perspective], 0, 7)),
+          static_cast<std::uint8_t>(8 + std::clamp(strongTotals[enemy], 0, 7)),
+          static_cast<std::uint8_t>(16 + std::clamp(restTotals[perspective], 0, 7)),
+          static_cast<std::uint8_t>(24 + std::clamp(restTotals[enemy], 0, 7)),
           static_cast<std::uint8_t>(32 + density(metadata.darkSquares)),
           static_cast<std::uint8_t>(40 + unknownLoss),
           static_cast<std::uint8_t>(56 + enemyUnknownLoss),
-          static_cast<std::uint8_t>(72 + threats[0]),
-          static_cast<std::uint8_t>(80 + threats[1])};
+          static_cast<std::uint8_t>(72 + threats[perspective][0]),
+          static_cast<std::uint8_t>(80 + threats[perspective][1])};
     }
+    for (Color color : {WHITE, BLACK})
+        metadata.darkCounts[color] = static_cast<std::uint8_t>(darkByColor[color]);
     metadata.valid = true;
     return metadata;
 }
@@ -447,6 +464,7 @@ AccumulatorStack::metadata_from_encoded(const EncodedPosition& encoded) {
         metadata.restCounts[perspective] = side.restCounts;
         metadata.metaOffsets[perspective] = side.metaOffsets;
     }
+    metadata.darkCounts = encoded.darkCounts;
     metadata.valid = true;
     return metadata;
 }
@@ -593,7 +611,10 @@ AccumulatorStack::View AccumulatorStack::evaluate(const Model& model, const Posi
         }
     }
     return {current.accumulated, current.metadata.layerStackBucket,
-            current.metadata.blendQ8, current.metadata.darkSquares};
+            current.metadata.blendQ8, current.metadata.darkSquares,
+            FeatureEncoder::inventory_context(current.metadata.restCounts,
+                                              current.metadata.darkCounts,
+                                              position.side_to_move())};
 }
 
 AccumulatorStack::View AccumulatorStack::evaluate(const Model& model,
@@ -627,7 +648,10 @@ AccumulatorStack::View AccumulatorStack::evaluate(const Model& model,
         }
     }
     return {current.accumulated, current.metadata.layerStackBucket,
-            current.metadata.blendQ8, current.metadata.darkSquares};
+            current.metadata.blendQ8, current.metadata.darkSquares,
+            FeatureEncoder::inventory_context(current.metadata.restCounts,
+                                              current.metadata.darkCounts,
+                                              position.side_to_move())};
 }
 
 }  // namespace ABJNNUE

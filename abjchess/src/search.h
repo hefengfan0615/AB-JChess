@@ -364,10 +364,8 @@ class Worker {
     TimePoint elapsed_time() const;
 
     Value evaluate(const Position&);
-    Value evaluate_for_reveal(const Position&);
     int   reveal_bonus(const Position&,
-                       const Reveal::QuietMoveContext& quietContext,
-                       Value&                          rawParentEval);
+                       const Reveal::QuietMoveContext& quietContext);
 
     LimitsType limits;
 
@@ -387,7 +385,6 @@ class Worker {
     bool        useSkyrule = false;
 
     Reveal::Parameters revealParameters;
-    int                revealPruningSlots = 0;
     bool               quietRewardEnabled = false;
     bool               quietSafetyNeeded  = false;
     bool               revealSearchTuning = false;

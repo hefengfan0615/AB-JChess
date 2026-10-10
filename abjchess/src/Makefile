@@ -471,7 +471,8 @@ ifeq ($(ABJNNUE_RUNTIME_REFRESH_CACHE),yes)
     CXXFLAGS += -DABJNNUE_RUNTIME_REFRESH_CACHE
 endif
 
-# Optional fused and SIMD accumulator implementations.
+# Fused accumulator rows remain diagnostic-only. The SIMD accumulator transform
+# is exact and enabled for normal builds.
 ABJNNUE_RUNTIME_RESEARCH ?= no
 ABJNNUE_RUNTIME_FUSED ?= no
 ifeq ($(ABJNNUE_RUNTIME_FUSED),yes)
@@ -481,11 +482,8 @@ endif
     CXXFLAGS += -DABJNNUE_RUNTIME_FUSED_UPDATE
 endif
 
-ABJNNUE_RUNTIME_SIMD ?= no
+ABJNNUE_RUNTIME_SIMD ?= yes
 ifeq ($(ABJNNUE_RUNTIME_SIMD),yes)
-ifneq ($(ABJNNUE_RUNTIME_RESEARCH),yes)
-    $(error ABJNNUE_RUNTIME_SIMD=yes requires ABJNNUE_RUNTIME_RESEARCH=yes)
-endif
     CXXFLAGS += -DABJNNUE_RUNTIME_SIMD_TRANSFORM
 endif
 

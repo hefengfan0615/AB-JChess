@@ -100,6 +100,18 @@ RawEvaluation Inference::evaluate_accumulated(const Model& model,
                                               const AccumulatedPosition& accumulated,
                                               LayerStackSelection selection,
                                               TransformedFeatures* transformedOutput) {
+    return evaluate_accumulated(model, position, accumulated, selection,
+                                FeatureEncoder::inventory_context(position,
+                                                                   position.side_to_move()),
+                                transformedOutput);
+}
+
+RawEvaluation Inference::evaluate_accumulated(const Model& model,
+                                              const Stockfish::Position& position,
+                                              const AccumulatedPosition& accumulated,
+                                              LayerStackSelection selection,
+                                              const InventoryContext& inventoryContext,
+                                              TransformedFeatures* transformedOutput) {
     if (selection.floor >= RuntimeLayout::LayerStacks)
         throw std::logic_error("ABJNNUE layer-stack bucket is out of range");
     if (selection.floor == RuntimeLayout::LayerStacks - 1) selection.blendQ8 = 0;
@@ -113,11 +125,10 @@ RawEvaluation Inference::evaluate_accumulated(const Model& model,
                                 + perspectiveIndex * RuntimeLayout::PerspectiveOutputWidth);
     }
     RawEvaluation raw;
-    const auto context = FeatureEncoder::inventory_context(position, order[0]);
     raw.positionalRaw = model.propagate_interpolated(selection.floor,
                                                        selection.blendQ8,
                                                        transformed.data(),
-                                                       context);
+                                                       inventoryContext);
     if (transformedOutput) *transformedOutput = transformed;
     return raw;
 }

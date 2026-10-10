@@ -65,6 +65,9 @@ constexpr std::uint8_t KingBucket[SQUARE_NB] = {
 static_assert(std::size(KingBucket) == SQUARE_NB);
 
 constexpr PieceType RestOrder[] = {ROOK, CANNON, KNIGHT, BISHOP, ADVISOR, PAWN};
+constexpr int BaseLayerStackBuckets[33] = {
+  -1, -1, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5,
+  6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 13, 14, 15};
 constexpr std::uint64_t MidBalanceEncoding = 0xa4a92a74e989d3a7ULL;
 
 bool valid_feature_piece(Piece piece) {
@@ -109,6 +112,12 @@ std::uint64_t mid_encoding(const Position& position, Color color) {
 bool requires_mid_mirror_impl(const Position& position, Color color) {
     const auto own = mid_encoding(position, color);
     const auto enemy = mid_encoding(position, ~color);
+    return ((1ULL << 63) & own & enemy)
+        && (own < MidBalanceEncoding
+            || (own == MidBalanceEncoding && enemy < MidBalanceEncoding));
+}
+
+bool requires_mid_mirror_from_encodings(std::uint64_t own, std::uint64_t enemy) {
     return ((1ULL << 63) & own & enemy)
         && (own < MidBalanceEncoding
             || (own == MidBalanceEncoding && enemy < MidBalanceEncoding));
@@ -220,6 +229,11 @@ int uncertainty_phase_bucket(int darkCount, int strongRest) {
     return darkBucket + restBucket;
 }
 
+std::uint32_t layer_stack_floor(int pieceCount, int darkCount, int strongRest) {
+    return static_cast<std::uint32_t>(std::clamp(
+      BaseLayerStackBuckets[pieceCount] + uncertainty_phase_bucket(darkCount, strongRest), 0, 15));
+}
+
 double interval_residual(int value, const int* thresholds, std::size_t count) {
     value = std::max(0, value);
     std::size_t bucket = 0;
@@ -312,6 +326,7 @@ std::size_t FeatureEncoder::dark_square_count(const Position& position) {
 
 InventoryContext FeatureEncoder::inventory_context(const Position& position,
                                                    Color perspective) {
+    // Independent position-based reference for callers without accumulator metadata.
     static constexpr PieceType types[] = {ROOK, ADVISOR, CANNON, PAWN, KNIGHT, BISHOP};
     static constexpr int maxima[] = {2, 2, 2, 5, 2, 2};
     const Color enemy = ~perspective;
@@ -330,7 +345,6 @@ InventoryContext FeatureEncoder::inventory_context(const Position& position,
             if (position.is_dark(square) && color_of(position.piece_on(square)) == color) ++total;
         return total;
     };
-
     InventoryContext context{};
     std::size_t out = 0;
     for (Color color : {perspective, enemy})
@@ -340,6 +354,34 @@ InventoryContext FeatureEncoder::inventory_context(const Position& position,
     context[out++] = quantize(darkCount(enemy), 16);
     context[out++] = quantize(poolCount(perspective) - darkCount(perspective), 15);
     context[out] = quantize(poolCount(enemy) - darkCount(enemy), 15);
+    return context;
+}
+
+InventoryContext FeatureEncoder::inventory_context(const InventoryRestCounts& restCounts,
+                                                   const InventoryDarkCounts& darkCounts,
+                                                   Color perspective) {
+    static constexpr int maxima[] = {2, 2, 2, 5, 2, 2};
+    const Color enemy = ~perspective;
+    const auto quantize = [](int value, int maximum) {
+        return static_cast<std::uint8_t>(std::clamp((value * 127 + maximum / 2) / maximum,
+                                                    0, 127));
+    };
+    static constexpr std::size_t contextTypeIndices[] = {0, 4, 1, 5, 2, 3};
+    const auto poolCount = [&](Color color) {
+        int total = 0;
+        for (const auto count : restCounts[color]) total += count;
+        return total;
+    };
+
+    InventoryContext context{};
+    std::size_t out = 0;
+    for (Color color : {perspective, enemy})
+        for (std::size_t type = 0; type < std::size(contextTypeIndices); ++type)
+            context[out++] = quantize(restCounts[color][contextTypeIndices[type]], maxima[type]);
+    context[out++] = quantize(darkCounts[perspective], 16);
+    context[out++] = quantize(darkCounts[enemy], 16);
+    context[out++] = quantize(poolCount(perspective) - darkCounts[perspective], 15);
+    context[out] = quantize(poolCount(enemy) - darkCounts[enemy], 15);
     return context;
 }
 
@@ -362,19 +404,44 @@ std::uint32_t FeatureEncoder::attack_bucket(const Position& position, Color pers
     return static_cast<std::uint32_t>(hasRook ? 2 : 0) + (hasKnightOrCannon ? 1 : 0);
 }
 
+std::array<std::uint8_t, COLOR_NB> FeatureEncoder::attack_buckets(const Position& position) {
+    std::array<bool, COLOR_NB> hasRook{};
+    std::array<bool, COLOR_NB> hasKnightOrCannon{};
+    for (Square square = SQ_A0; square <= SQ_I9; ++square)
+    {
+        const Piece piece = position.piece_on(square);
+        if (piece == NO_PIECE || position.is_dark(square)) continue;
+        const Color color = color_of(piece);
+        switch (type_of(piece))
+        {
+        case ROOK: hasRook[color] = true; break;
+        case KNIGHT:
+        case CANNON: hasKnightOrCannon[color] = true; break;
+        default: break;
+        }
+    }
+    return {static_cast<std::uint8_t>((hasRook[WHITE] ? 2 : 0)
+                                     + (hasKnightOrCannon[WHITE] ? 1 : 0)),
+            static_cast<std::uint8_t>((hasRook[BLACK] ? 2 : 0)
+                                     + (hasKnightOrCannon[BLACK] ? 1 : 0))};
+}
+
 bool FeatureEncoder::requires_mid_mirror(const Position& position, Color perspective) {
     return requires_mid_mirror_impl(position, perspective);
 }
 
+std::array<bool, COLOR_NB> FeatureEncoder::requires_mid_mirrors(const Position& position) {
+    const auto white = mid_encoding(position, WHITE);
+    const auto black = mid_encoding(position, BLACK);
+    return {requires_mid_mirror_from_encodings(white, black),
+            requires_mid_mirror_from_encodings(black, white)};
+}
+
 std::uint32_t FeatureEncoder::layer_stack_bucket(const Position& position) {
-    static constexpr int baseBuckets[33] = {
-      -1, -1, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5,
-      6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 13, 14, 15};
     const int pieceCount = std::clamp(position.count<ALL_PIECES>(), 2, 32);
     const int darkCount = static_cast<int>(dark_square_count(position));
     const int strongRest = strong_rest_count(position, WHITE) + strong_rest_count(position, BLACK);
-    const int bucket = baseBuckets[pieceCount] + uncertainty_phase_bucket(darkCount, strongRest);
-    return static_cast<std::uint32_t>(std::clamp(bucket, 0, 15));
+    return layer_stack_floor(pieceCount, darkCount, strongRest);
 }
 
 LayerStackSelection FeatureEncoder::layer_stack_selection(const Position& position) {
@@ -384,7 +451,7 @@ LayerStackSelection FeatureEncoder::layer_stack_selection(const Position& positi
     const int darkCount = static_cast<int>(dark_square_count(position));
     const int strongRest = strong_rest_count(position, WHITE)
                          + strong_rest_count(position, BLACK);
-    const auto floor = layer_stack_bucket(position);
+    const auto floor = layer_stack_floor(pieceCount, darkCount, strongRest);
     if (floor >= 15) return {15, 0};
     const double fraction = (piece_residual(pieceCount)
                            + interval_residual(darkCount, darkThresholds,
@@ -398,6 +465,12 @@ LayerStackSelection FeatureEncoder::layer_stack_selection(const Position& positi
 
 KingTransform FeatureEncoder::king_transform(const Position& position, Color perspective) {
     return make_king_transform(position, perspective, requires_mid_mirror(position, perspective));
+}
+
+KingTransform FeatureEncoder::king_transform(const Position& position,
+                                             Color perspective,
+                                             bool midMirror) {
+    return make_king_transform(position, perspective, midMirror);
 }
 
 std::uint32_t FeatureEncoder::board_index(Color perspective,
@@ -450,15 +523,20 @@ std::uint32_t FeatureEncoder::dark_rest_index(Color perspective,
 EncodedPosition FeatureEncoder::encode(const Position& position) {
     EncodedPosition output;
     output.darkSquares = dark_square_count(position);
-    output.layerStackBucket = layer_stack_bucket(position);
     output.layerStackSelection = layer_stack_selection(position);
+    output.layerStackBucket = output.layerStackSelection.floor;
+    for (Color color : {WHITE, BLACK})
+        output.darkCounts[color] = static_cast<std::uint8_t>(
+          popcount(position.pieces(color) & position.pieces(DARK)));
+    const auto midMirrors = requires_mid_mirrors(position);
+    const auto attackBuckets = attack_buckets(position);
 
     for (Color perspective : {WHITE, BLACK})
     {
         auto& side = output.perspectives[perspective];
-        const bool midMirror = requires_mid_mirror(position, perspective);
+        const bool midMirror = midMirrors[perspective];
         const auto transform = make_king_transform(position, perspective, midMirror);
-        const auto attack = attack_bucket(position, perspective);
+        const auto attack = attackBuckets[perspective];
         const auto bucket = transform.bucket * RuntimeLayout::AttackBuckets + attack;
         side.perspective = perspective;
         side.kingBucket = transform.bucket;

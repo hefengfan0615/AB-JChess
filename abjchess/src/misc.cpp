@@ -65,7 +65,7 @@ std::string utf8_from_wide(const std::wstring& value) {
 // The UCI identity is versioned independently from the user-facing startup
 // banner, which intentionally keeps the product name without an internal
 // architecture suffix.
-constexpr std::string_view version = "0.2c";
+constexpr std::string_view version = "0.2d";
 
 // Our fancy logging facility. The trick here is to replace cin.rdbuf() and
 // cout.rdbuf() with two Tie objects that tie cin and cout to a file stream. We

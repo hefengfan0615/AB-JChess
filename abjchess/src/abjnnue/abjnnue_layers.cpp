@@ -65,9 +65,14 @@ void affine_scalar(const std::uint8_t* input,
 #if defined(USE_AVX2)
 
 __m256i add_dpbusd(__m256i accumulator, __m256i input, __m256i weights) {
+#if defined(USE_AVXVNNI)
+    // Head activations are clipped to 0..127, so this is exact versus maddubs.
+    return _mm256_dpbusd_avx_epi32(accumulator, input, weights);
+#else
     auto products = _mm256_maddubs_epi16(input, weights);
     products      = _mm256_madd_epi16(products, _mm256_set1_epi16(1));
     return _mm256_add_epi32(accumulator, products);
+#endif
 }
 
 template<std::size_t InputDimensions, std::size_t OutputDimensions, bool Sparse>
@@ -275,7 +280,9 @@ std::int32_t propagate_scalar(const std::uint8_t* head, const std::uint8_t* inpu
 }
 
 const char* backend_name() noexcept {
-#if defined(USE_AVX2)
+#if defined(USE_AVXVNNI)
+    return "avx-vnni";
+#elif defined(USE_AVX2)
     return "avx2";
 #elif defined(USE_SSSE3)
     return "ssse3";

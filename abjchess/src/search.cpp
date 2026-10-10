@@ -193,17 +193,10 @@ Reveal::Parameters Search::snapshot_reveal_parameters(const OptionsMap& options)
 #if defined(ABJCHESS_RELEASE)
     (void) options;
     // Release builds bake in the validated defaults and omit research UCI knobs.
-    return {0, 0, 0, 0, 0, 0, 0, 0,
-            -12, 0, 24, -12, 0, 0, 0, 0};
+    return {-12, 24, -12};
 #else
-    return {int(options["RevealBonusBase"]),       int(options["RevealBonusPhase"]),
-            int(options["RevealBonusPool"]),       int(options["RevealBonusUnknown"]),
-            int(options["RevealBonusComeback"]),   int(options["RevealMoveOrder"]),
-            int(options["RevealReduction"]),       int(options["RevealPruningMargin"]),
-            int(options["RevealQuietBase"]),       int(options["RevealQuietPhase"]),
-            int(options["RevealQuietSafety"]),     int(options["RevealQuietHighValue"]),
-            int(options["RevealQuietDiversity"]),  int(options["RevealQuietComeback"]),
-            int(options["RevealQuietMoveOrder"]),  int(options["RevealQuietReduction"])};
+    return {int(options["RevealQuietBase"]), int(options["RevealQuietSafety"]),
+            int(options["RevealQuietHighValue"])};
 #endif
 }
 
@@ -239,13 +232,9 @@ void Search::Worker::start_searching() {
     refresh_chasing_rule();
     reset_correction_histories();
     revealParameters   = snapshot_reveal_parameters(options);
-    revealPruningSlots = Reveal::pruning_slots(revealParameters.pruningMargin);
     quietRewardEnabled = Reveal::quiet_bonus_enabled(revealParameters);
-    quietSafetyNeeded  = quietRewardEnabled || revealParameters.quietMoveOrder != 0
-                     || revealParameters.quietReduction != 0;
-    revealSearchTuning = Reveal::bonus_enabled(revealParameters)
-                      || revealParameters.moveOrder != 0 || revealParameters.reduction != 0
-                      || revealParameters.pruningMargin != 0 || quietSafetyNeeded;
+    quietSafetyNeeded  = quietRewardEnabled;
+    revealSearchTuning = quietSafetyNeeded;
     rootObserver       = rootPos.side_to_move();
     accumulatorStack.reset();
 #if defined(ABJNNUE_RUNTIME_REFRESH_CACHE)
@@ -820,7 +809,7 @@ Value Search::Worker::search(
     else if (excludedMove)
     {
         eval                 = ss->staticEval;
-        unadjustedStaticEval = Reveal::raw_eval_for_research(ttData.eval, ss->staticEval);
+        unadjustedStaticEval = ttData.eval;
     }
     else if (ss->ttHit)
     {
@@ -957,21 +946,9 @@ Value Search::Worker::search(
     {
         assert(probCutBeta < VALUE_INFINITE && probCutBeta > beta);
 
-        const Reveal::OrderingParameters ordering{revealParameters.moveOrder,
-                                                   revealParameters.quietMoveOrder,
-                                                   revealParameters.pruningMargin};
-        const bool tunedMovePicker = UseReveal
-                                  && (ordering.darkMoveOrder != 0
-                                      || ordering.quietMoveOrder != 0
-                                      || ordering.pruningMargin != 0);
-        MovePicker mp = tunedMovePicker
-                        ? MovePicker(pos, ttData.move, probCutBeta - ss->staticEval,
-                                     &thisThread->captureHistory, ordering)
-                        : MovePicker(pos, ttData.move, probCutBeta - ss->staticEval,
-                                     &thisThread->captureHistory);
-        while ((move = tunedMovePicker ? mp.next_reveal_move(false, false)
-                                       : mp.next_move())
-               != Move::none())
+        MovePicker mp(pos, ttData.move, probCutBeta - ss->staticEval,
+                      &thisThread->captureHistory);
+        while ((move = mp.next_move()) != Move::none())
         {
             assert(move.is_ok());
 
@@ -982,10 +959,7 @@ Value Search::Worker::search(
 
             movedPiece                = pos.moved_piece(move);
             revealMove                = UseReveal && pos.move_dark(move);
-            const Reveal::QuietMoveContext quietContext{};
-            assert(!quietContext.eligible || (revealMove && !pos.capture(move)));
-            const int moveRevealBonus =
-              revealMove ? reveal_bonus(pos, quietContext, unadjustedStaticEval) : 0;
+            const int moveRevealBonus = 0;
 
             const bool probCutCapturedDark = pos.is_dark(move.to_sq());
             ss->capturedDark               = probCutCapturedDark;
@@ -1047,33 +1021,16 @@ moves_loop:  // When in check, search starts here
       (ss - 4)->continuationHistory, (ss - 5)->continuationHistory, (ss - 6)->continuationHistory};
 
 
-    const Reveal::OrderingParameters ordering{revealParameters.moveOrder,
-                                               revealParameters.quietMoveOrder,
-                                               revealParameters.pruningMargin};
-    const bool tunedMovePicker = UseReveal
-                              && (ordering.darkMoveOrder != 0 || ordering.quietMoveOrder != 0
-                                  || ordering.pruningMargin != 0);
-    MovePicker mp =
-      tunedMovePicker
-        ? MovePicker(pos, ttData.move, depth, &thisThread->mainHistory, &thisThread->lowPlyHistory,
-                     &thisThread->captureHistory, contHist, &thisThread->pawnHistory, ss->ply,
-                     ordering)
-        : MovePicker(pos, ttData.move, depth, &thisThread->mainHistory, &thisThread->lowPlyHistory,
-                     &thisThread->captureHistory, contHist, &thisThread->pawnHistory, ss->ply);
+    MovePicker mp(pos, ttData.move, depth, &thisThread->mainHistory, &thisThread->lowPlyHistory,
+                  &thisThread->captureHistory, contHist, &thisThread->pawnHistory, ss->ply);
 
     value = bestValue;
 
     int moveCount = 0;
 
-    bool keepDarkQuiets = false;
-    bool skipDarkQuiets = false;
-
     // Step 12. Loop through all pseudo-legal moves until no moves remain
     // or a beta cutoff occurs.
-    while ((move = tunedMovePicker
-                     ? mp.next_reveal_move(keepDarkQuiets, skipDarkQuiets)
-                     : mp.next_move())
-           != Move::none())
+    while ((move = mp.next_move()) != Move::none())
     {
         assert(move.is_ok());
 
@@ -1121,9 +1078,6 @@ moves_loop:  // When in check, search starts here
         int delta = beta - alpha;
 
         Depth r = reduction(improving, depth, moveCount, delta);
-        if constexpr (UseReveal)
-            r = Reveal::adjust_reduction(r, revealMove, quietContext.safe(), revealParameters);
-
         // Increase reduction for ttPv nodes (*Scaler)
         // Smaller or even negative value is better for short time controls
         // Bigger value is better for long time controls
@@ -1136,31 +1090,8 @@ moves_loop:  // When in check, search starts here
         {
             // Skip quiet moves if movecount exceeds our FutilityMoveCount threshold
             const int baseMoveCountLimit = (3 + depth * depth) / (2 - improving);
-            if constexpr (!UseReveal)
-            {
-                if (moveCount >= baseMoveCountLimit)
-                    mp.skip_quiet_moves();
-            }
-            else
-            {
-                if (revealParameters.pruningMargin == 0)
-                {
-                    if (moveCount >= baseMoveCountLimit)
-                        mp.skip_quiet_moves();
-                }
-                else
-                {
-                    const auto quietPruning = Reveal::quiet_pruning_after_move(
-                      moveCount, baseMoveCountLimit, revealPruningSlots);
-
-                    if (quietPruning.skipVisibleQuiets)
-                        mp.skip_quiet_moves();
-
-                    keepDarkQuiets =
-                      quietPruning.skipVisibleQuiets && !quietPruning.skipDarkQuiets;
-                    skipDarkQuiets = quietPruning.skipDarkQuiets;
-                }
-            }
+            if (moveCount >= baseMoveCountLimit)
+                mp.skip_quiet_moves();
 
             // Reduced depth of the next LMR search
             int lmrDepth = newDepth - r / 811;
@@ -1175,16 +1106,14 @@ moves_loop:  // When in check, search starts here
                 if (!givesCheck && lmrDepth < 18 && !ss->inCheck)
                 {
                     Value futilityValue = ss->staticEval + 307 + 365 * lmrDepth
-                                        + PieceValue[capturedPiece] + 105 * captHist / 491
-                                        + (revealMove ? revealParameters.pruningMargin : 0);
+                                        + PieceValue[capturedPiece] + 105 * captHist / 491;
                     if (futilityValue <= alpha)
                         continue;
                 }
 
                 // SEE based pruning for captures and checks
                 int seeHist = std::clamp(captHist / 30, -204 * depth, 186 * depth);
-                if (!pos.see_ge(move, -225 * depth - seeHist
-                                        - (revealMove ? revealParameters.pruningMargin : 0)))
+                if (!pos.see_ge(move, -225 * depth - seeHist))
                     continue;
             }
             else
@@ -1195,7 +1124,7 @@ moves_loop:  // When in check, search starts here
                   + thisThread->pawnHistory[pawn_structure_index(pos)][movedPiece][move.to_sq()];
 
                 // Continuation history based pruning
-                if (history < -3491 * depth - (revealMove ? 8 * revealParameters.pruningMargin : 0))
+                if (history < -3491 * depth)
                     continue;
 
                 history += 60 * thisThread->mainHistory[us][move.from_to()] / 28;
@@ -1204,8 +1133,7 @@ moves_loop:  // When in check, search starts here
 
                 Value baseFutility  = (bestMove ? 48 : 275);
                 Value futilityValue = ss->staticEval + baseFutility + 126 * lmrDepth
-                                    + 103 * (ss->staticEval > alpha)
-                                    + (revealMove ? revealParameters.pruningMargin : 0);
+                                    + 103 * (ss->staticEval > alpha);
 
                 // Futility pruning: parent node
                 // (*Scaler): Generally, more frequent futility pruning
@@ -1221,8 +1149,7 @@ moves_loop:  // When in check, search starts here
                 lmrDepth = std::max(lmrDepth, 0);
 
                 // Prune moves with negative SEE
-                if (!pos.see_ge(move, -38 * lmrDepth * lmrDepth
-                                        - (revealMove ? revealParameters.pruningMargin : 0)))
+                if (!pos.see_ge(move, -38 * lmrDepth * lmrDepth))
                     continue;
             }
         }
@@ -1294,7 +1221,7 @@ moves_loop:  // When in check, search starts here
 
         // Step 15. Make the move
         const int moveRevealBonus =
-          revealMove ? reveal_bonus(pos, quietContext, unadjustedStaticEval) : 0;
+          revealMove ? reveal_bonus(pos, quietContext) : 0;
         ss->capturedDark          = capture && pos.is_dark(move.to_sq());
         do_move(pos, move, st, givesCheck);
 
@@ -1789,26 +1716,13 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     // Initialize a MovePicker object for the current position, and prepare to search
     // the moves. We presently use two stages of move generator in quiescence search:
     // captures, or evasions only when in check.
-    const Reveal::OrderingParameters ordering{revealParameters.moveOrder,
-                                               revealParameters.quietMoveOrder,
-                                               revealParameters.pruningMargin};
-    const bool tunedMovePicker = UseReveal
-                              && (ordering.darkMoveOrder != 0 || ordering.quietMoveOrder != 0
-                                  || ordering.pruningMargin != 0);
-    MovePicker mp =
-      tunedMovePicker
-        ? MovePicker(pos, ttData.move, DEPTH_QS, &thisThread->mainHistory,
-                      &thisThread->lowPlyHistory, &thisThread->captureHistory, contHist,
-                      &thisThread->pawnHistory, ss->ply, ordering)
-        : MovePicker(pos, ttData.move, DEPTH_QS, &thisThread->mainHistory,
-                     &thisThread->lowPlyHistory, &thisThread->captureHistory, contHist,
-                     &thisThread->pawnHistory, ss->ply);
+    MovePicker mp(pos, ttData.move, DEPTH_QS, &thisThread->mainHistory,
+                  &thisThread->lowPlyHistory, &thisThread->captureHistory, contHist,
+                  &thisThread->pawnHistory, ss->ply);
 
     // Step 5. Loop through all pseudo-legal moves until no moves remain or a beta
     // cutoff occurs.
-    while ((move = tunedMovePicker ? mp.next_reveal_move(false, false)
-                                   : mp.next_move())
-           != Move::none())
+    while ((move = mp.next_move()) != Move::none())
     {
         if (threads.stop.load(std::memory_order_relaxed))
             return VALUE_ZERO;
@@ -1835,24 +1749,10 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
             // Futility pruning and moveCount pruning
             if (!givesCheck && move.to_sq() != prevSq && !is_loss(futilityBase))
             {
-                if constexpr (!UseReveal)
-                {
-                    if (moveCount > 2)
-                        continue;
-                }
-                else
-                {
-                    if (revealParameters.pruningMargin == 0)
-                    {
-                        if (moveCount > 2)
-                            continue;
-                    }
-                    else if (moveCount > 2 + (revealMove ? revealPruningSlots : 0))
-                        continue;
-                }
+                if (moveCount > 2)
+                    continue;
 
-                Value futilityValue = futilityBase + PieceValue[pos.piece_on(move.to_sq())]
-                                    + (revealMove ? revealParameters.pruningMargin : 0);
+                Value futilityValue = futilityBase + PieceValue[pos.piece_on(move.to_sq())];
 
                 // If static eval + value of piece we are going to capture is
                 // much lower than alpha, we can prune this move.
@@ -1864,8 +1764,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
 
                 // If static exchange evaluation is low enough
                 // we can prune this move.
-                if (!pos.see_ge(move, alpha - futilityBase
-                                        - (revealMove ? revealParameters.pruningMargin : 0)))
+                if (!pos.see_ge(move, alpha - futilityBase))
                 {
                     bestValue = std::min(alpha, futilityBase);
                     continue;
@@ -1877,18 +1776,18 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
                 && (*contHist[0])[pos.moved_piece(move)][move.to_sq()]
                        + thisThread->pawnHistory[pawn_structure_index(pos)][pos.moved_piece(move)]
                                                 [move.to_sq()]
-                     <= 2861 - (revealMove ? 8 * revealParameters.pruningMargin : 0))
+                     <= 2861)
                 continue;
 
             // Do not search moves with bad enough SEE values
-            if (!pos.see_ge(move, -114 - (revealMove ? revealParameters.pruningMargin : 0)))
+            if (!pos.see_ge(move, -114))
                 continue;
         }
 
         // Step 7. Make and search the move
         Piece     movedPiece      = pos.moved_piece(move);
         const int moveRevealBonus =
-          revealMove ? reveal_bonus(pos, quietContext, unadjustedStaticEval) : 0;
+          revealMove ? reveal_bonus(pos, quietContext) : 0;
 
         ss->capturedDark = capture && pos.is_dark(move.to_sq());
         do_move(pos, move, st, givesCheck);
@@ -2230,31 +2129,14 @@ Value Search::Worker::evaluate(const Position& pos) {
                           optimism[pos.side_to_move()]);
 }
 
-Value Search::Worker::evaluate_for_reveal(const Position& pos) {
-    return Eval::evaluate_for_reveal(networks[numaAccessToken], pos, accumulatorStack, refreshTable,
-                                     optimism[pos.side_to_move()]);
-}
-
 int Search::Worker::reveal_bonus(const Position&                 pos,
-                                 const Reveal::QuietMoveContext& quietContext,
-                                 Value&                          rawParentEval) {
-    const bool useV1 = Reveal::bonus_enabled(revealParameters);
-    const bool useV2 = quietContext.eligible && Reveal::quiet_bonus_enabled(revealParameters);
-    if (!useV1 && !useV2)
+                                 const Reveal::QuietMoveContext& quietContext) {
+    if (!quietContext.eligible || !Reveal::quiet_bonus_enabled(revealParameters))
         return 0;
 
-    if (Reveal::raw_eval_needed(revealParameters, quietContext) && !is_valid(rawParentEval))
-        rawParentEval = evaluate_for_reveal(pos);
-
-    const Value featureEval = is_valid(rawParentEval) ? rawParentEval : VALUE_ZERO;
-    const int   v1 = useV1 ? Reveal::bonus(revealParameters,
-                                         Reveal::make_features(pos, featureEval))
-                           : 0;
-    const int v2 = useV2 ? Reveal::quiet_bonus(
-                             revealParameters,
-                             Reveal::make_quiet_features(pos, quietContext.safety, featureEval))
-                         : 0;
-    return Reveal::combine_bonus(v1, v2, quietContext.eligible);
+    return Reveal::quiet_bonus(
+      revealParameters,
+      Reveal::make_quiet_features(pos, quietContext.safety));
 }
 
 namespace {
