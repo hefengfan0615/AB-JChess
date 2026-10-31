@@ -20,7 +20,7 @@ on:
       nnue_url:
         description: "NNUE URL: <...>.zip/<path-inside-zip>/<name>.nnue"
         required: true
-        default: "https://github.com/lxsgx23/AB-JChess/releases/download/v0.2d/0.2d_bmi2.zip/0.2d_bmi2/abjchess-20261010.nnue"
+        default: "https://github.com/lxsgx23/AB-JChess/releases/download/AB-JChess-20261031/AB-JChess-20261031.zip/AB-JChess-20261031/abjchess-20261030.nnue"
         type: string
 
 concurrency:
@@ -73,11 +73,15 @@ jobs:
           curl -fL --retry 3 --retry-delay 5 -o nnue.zip "$NNUE_ZIP_URL"
           unzip -o nnue.zip
           ls -la "$NNUE_INNER_PATH"
-          # Only check the "ABJCHESSV" prefix; the trailing version digits can
-          # change between releases (V11, V82, ...) without breaking CI.
-          magic="$(head -c 9 "$NNUE_INNER_PATH")"
-          echo "NNUE magic prefix: $magic"
-          [ "$magic" = "ABJCHESSV" ] || { echo "Unexpected NNUE magic: $magic" >&2; exit 1; }
+          # The bundled engine is the small-net-only build (nnue_small.cpp), so
+          # the net must be a small HNN net: raw JQHNNUE1 or its lossless
+          # JQHNNL01 / JQHNNZ01 containers. All three carry an 8-byte magic.
+          magic="$(head -c 8 "$NNUE_INNER_PATH")"
+          echo "NNUE magic: $magic"
+          case "$magic" in
+            JQHNNZ01|JQHNNL01|JQHNNUE1) ;;
+            *) echo "Unexpected NNUE magic: $magic (expected a small HNN net: JQHNNZ01/JQHNNL01/JQHNNUE1)" >&2; exit 1 ;;
+          esac
 
       - name: Point the two bundled-NNUE references at the new file
         run: |
@@ -107,11 +111,12 @@ jobs:
         run: |
           set -e
           export PATH="$NDK_BIN:$PATH"
-          cd abjchess/src
-          make objclean
-          make -j2 build ARCH=armv8 COMP=ndk
-          cd ../..
-          file abjchess/src/AB-JChess
+          export ANDROID_NDK_HOME="/usr/local/$NDK_DIR"
+          cd abjchess
+          # Universal arm64 binary: armv8-dotprod + armv8 with runtime dispatch.
+          JOBS=2 src/isa/build_universal.sh android-arm64 out-a64
+          cd ..
+          file abjchess/out-a64/abjchess-android-arm64-v8a
 
       - name: Place engine + NNUE into the APK
         run: |
@@ -119,7 +124,7 @@ jobs:
           # 1) ENGINE -> embedded in the Rust lib via include_bytes! (small; the
           # per-ABI duplication in a universal APK is negligible).
           mkdir -p "$BUNDLED_ENGINE_DIR"
-          cp abjchess/src/AB-JChess "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
+          cp abjchess/out-a64/abjchess-android-arm64-v8a "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
           chmod 755 "$BUNDLED_ENGINE_DIR/$BUNDLED_ENGINE_NAME"
 
           # 2) NNUE -> a single Android raw asset. Do NOT embed it via
